@@ -1,0 +1,20 @@
+[package]
+name = "estimated-hellinger"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies.statrs]
+version = "0.17.1"
+optional = true
+
+[features]
+default = ["statrs"]
+statrs = ["dep:statrs"]
+
+[dev-dependencies]
+rand = "0.8.5"
+
+[[test]]
+name = "distribution-std"
+path = "tests/distribution-std.rs"
+required-features = ["statrs"]
