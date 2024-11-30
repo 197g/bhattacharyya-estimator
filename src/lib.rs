@@ -38,7 +38,22 @@ impl ConfidenceLevel {
         assert!(level < 1.0);
 
         ConfidenceLevel {
-            dkw_constant: Self::dvoretzky_kiefer_wolfowitz_constant(level),
+            dkw_constant: Self::dvoretzky_kiefer_wolfowitz_constant(level.ln()),
+        }
+    }
+
+    /// Construct a confidence level with a given amount of zero-digits.
+    ///
+    /// That is, this is equivalent to calling [`Self::new`] with `10**-digits`. Just a convenience
+    /// function that will be accurate for extreme confidence levels.
+    pub fn from_magnitude(digits: f64) -> Self {
+        assert!(
+            digits.is_finite() && digits > 0.0,
+            "Magnitude of a confidence level must be strictly positive"
+        );
+
+        ConfidenceLevel {
+            dkw_constant: Self::dvoretzky_kiefer_wolfowitz_constant(-10f64.ln() * digits),
         }
     }
 
@@ -48,7 +63,16 @@ impl ConfidenceLevel {
         let count = sorted.len() as f64;
         let sqrt_n = count.sqrt();
 
-        let skip = count.powf(2.0 / 3.0).ceil() as usize;
+        // Choose steps wider than `count.sqrt()`. This makes sure that the overestimate added on
+        // each interval by the confidence level correction (the `expand` variable) still
+        // disappears in the limit when `n -> inf`. The choice is somewhat arbitrary though.
+        // Smaller step sizes require far more data to yield a useful BC estimate at highly
+        // reliable confidence levels.
+        let skip = count.powf(3.0 / 4.0).ceil() as usize;
+
+        // This isn't the *only* way to chunk up our samples. We may do an adaptive one? Any way of
+        // chunking them up is permissible for an estimate! Just don't *try* different chunking as
+        // we'd have to correct our confidence bound respectively.
 
         // Quantiles according to limit distribution.
         let ps = (0..sorted.len())
@@ -76,9 +100,9 @@ impl ConfidenceLevel {
     /// ```
     ///
     /// This only returns the constant which does not depend on `n`.
-    fn dvoretzky_kiefer_wolfowitz_constant(level: f64) -> f64 {
-        assert!(level < 1.0);
-        ((2.0f64.ln() - level.ln()) / 2.0).sqrt()
+    fn dvoretzky_kiefer_wolfowitz_constant(ln_level: f64) -> f64 {
+        assert!(ln_level < 0.0);
+        ((2.0f64.ln() - ln_level) / 2.0).sqrt()
     }
 }
 
@@ -101,13 +125,22 @@ impl Estimate {
     }
 
     fn from_matched_quantiles(mut ps: Vec<f64>, mut qs: Vec<f64>, expand: f64) -> Self {
-        Self::diff_in_place_with_added_bias(&mut ps, 0.0);
-        Self::diff_in_place_with_added_bias(&mut qs, expand);
+        // Push a point representing the CDF values at inf.
+        ps.push(1.0);
+        qs.push(1.0);
+
+        assert_eq!(ps.len(), qs.len());
+
+        // Calculate difference intervals, first being from the -inf point.
+        Self::diff_in_place_with_added_bias(&mut ps, expand);
+        Self::diff_in_place_with_added_bias(&mut qs, 0.0);
 
         let p_weight = ps.iter().copied();
         let q_weight = qs.iter().copied();
 
-        // Over-estimation of the real, plus bias.
+        // Over-estimation of the real, plus bias. Due to Hölder where f=sqrt(p) and g=sqrt(q), for
+        // piecewise portions of the defining integral of affinity. The piece's endpoints in the
+        // domain are defined by the ECDF samples.
         let bc_estimate: f64 = p_weight
             .zip(q_weight)
             .map(|(lp, lq)| (lp * lq).sqrt())
@@ -126,6 +159,8 @@ impl Estimate {
     }
 
     fn diff_in_place_with_added_bias(slice: &mut [f64], expand: f64) {
+        debug_assert!(expand >= 0.0);
+
         let mut state = 0.0;
         slice.iter_mut().for_each(|x| {
             let pre = core::mem::replace(&mut state, *x);
