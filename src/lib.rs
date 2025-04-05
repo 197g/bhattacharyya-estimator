@@ -1,3 +1,5 @@
+pub mod mixed;
+
 use statrs::distribution::ContinuousCDF;
 
 #[derive(Clone, Debug)]
