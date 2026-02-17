@@ -46,6 +46,7 @@ fn check_ecdf(v: &[f64], n: &dyn ContinuousCDF<f64, f64>, actual_bc: f64) {
     let e95 = ConfidenceLevel::P95.apply(v, n);
     let e99 = ConfidenceLevel::P99.apply(v, n);
     let e_always = ConfidenceLevel::from_magnitude(12.5).apply(v, n);
+    let constraint = ConfidenceLevel::P99.constraint_maximizer(v, n);
 
     eprintln!("Actual {}", actual_bc);
     // This is probably too low, at least quite likely.
@@ -58,6 +59,7 @@ fn check_ecdf(v: &[f64], n: &dyn ContinuousCDF<f64, f64>, actual_bc: f64) {
     eprintln!("P99 {}", e99.bc_estimate);
     // Eh. Would fail every few runs of these tests.
     eprintln!("P95 {}", e95.bc_estimate);
+    eprintln!("Constraint {}", constraint.bc_estimate);
     eprintln!("");
 
     assert!(estimate.bc_estimate <= e95.bc_estimate);

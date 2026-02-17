@@ -1,3 +1,4 @@
+mod constraint;
 pub mod mixed;
 
 use statrs::distribution::ContinuousCDF;
@@ -86,6 +87,14 @@ impl ConfidenceLevel {
 
         let expand = self.dkw_constant / sqrt_n;
         Estimate::from_matched_quantiles(ps.collect(), qs.collect(), expand)
+    }
+
+    pub fn constraint_maximizer(
+        &self,
+        sorted: &[f64],
+        cdf: &dyn ContinuousCDF<f64, f64>,
+    ) -> Estimate {
+        constraint::apply(self, sorted, cdf)
     }
 
     /// Adjustment of CDF with Dvoretzky-Kiefer-Wolfowitz bounds:
