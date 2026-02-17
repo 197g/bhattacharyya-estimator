@@ -57,6 +57,10 @@
 
 /// See module documentation.
 ///
+/// FIXME: this method is mathematically correct, I think, but numerically it isn't a perfect
+/// upper-bound estimator. That is of course unfortunate. It is much better than the unreliable
+/// estimator from the other module.
+///
 /// Here we apply the successive iteration steps. Note that in each we traverse in direction
 /// `Sqrt(p_i)` for all in-active constraints. So we're searching for the length of the step until
 /// hitting a constraint. Substituting the direction into the constraint gives us a quadratic
@@ -93,20 +97,20 @@ pub fn apply(
     let sqrt_n = count.sqrt();
     let expand = level.dkw_constant / sqrt_n;
 
-    // Note: here we use a much smaller skip than other estimators. The combined constraints take
+    // Note: here we use a much smaller step than other estimators. The combined constraints take
     // care of ensuring that the error does not *add* up from this but rather the extra intervals
     // can be utilized. The only reason to reduce the data here is that the loop below is otherwise
     // cubic in runtime so we make it quadratic...
-    let skip = count.powf(2.0 / 3.0).ceil() as usize;
+    let step = count.powf(2.0 / 3.0).ceil() as usize;
 
     let mut qs: Vec<_> = (0..sorted.len())
-        .step_by(skip)
+        .step_by(step)
         .map(|n| (1. + n as f64) / count)
         .collect();
     qs.push(1.0);
 
     // Square roots of `p_i` but convenient to initialize it with `p_i` itself.
-    let mut ps: Vec<_> = sorted.chunks(skip).map(|arr| cdf.cdf(arr[0])).collect();
+    let mut ps: Vec<_> = sorted.chunks(step).map(|arr| cdf.cdf(arr[0])).collect();
     ps.push(1.0);
     super::Estimate::diff_in_place_with_added_bias(&mut ps, 0.0);
     ps.iter_mut().for_each(|p_i| {
@@ -160,6 +164,7 @@ pub fn apply(
     offset.iter_mut().for_each(|o| *o = o.sqrt());
 
     let mut pre = PrefixLookup {
+        active: (0..qs.len()).collect(),
         a: raw_a,
         b: raw_b,
         c: raw_c,
@@ -173,6 +178,8 @@ pub fn apply(
     while !pre.is_empty() {
         let mut lambda = f64::INFINITY;
         let mut best = (0, 0);
+
+        assert!(pre.active.len() <= sqrtp.len());
         assert_eq!(pre.a.len(), sqrtp.len());
         assert_eq!(pre.b.len(), sqrtp.len());
         assert_eq!(pre.c.len(), sqrtp.len());
@@ -204,10 +211,12 @@ pub fn apply(
         // Remove (j..k) from the problem and update the prefix sums.
         let (j, k) = best;
 
+        /*
         eprintln!(
             "Step length: {lambda}/{:?}, value: {value} / {total_p}×{total_interval}",
             j..=k
         );
+        */
 
         // Note that we should be careful here, we want to remove variables from the problem but
         // the constraint system should stay defined as is. Rather, the constraint system is
@@ -223,16 +232,19 @@ pub fn apply(
         pre.adjust(&sqrtp, lambda);
 
         // Then update variable offsets themselves.
-        for (idx, (p_i, o)) in sqrtp.iter().zip(offset.iter_mut()).enumerate() {
+        for (p_i, o) in sqrtp.iter().zip(offset.iter_mut()) {
+            // Only open variables.
             if *p_i > 0.0 {
                 *o += lambda * p_i;
-            }
-            /*
-            assert!(
+                /* Mathematically, yes. Numerically, no. And we don't care about exceeding the
+                * maximum bound directly as that makes the function value appear larger as long as
+                * it does not cause other steps to be smaller than possible.
+                  assert!(
                 *o * *o <= uppers[idx] - lowers_jplus_one[idx],
                 "{o} >= {} at index {idx}, something is wrong",
                 uppers[idx] - lowers_jplus_one[idx]
-            ); */
+                ); */
+            }
         }
 
         // Count contribution from open variables.
@@ -253,7 +265,10 @@ pub fn apply(
         pre.remove(j, k, &offset);
     }
 
-    eprintln!("Value at optimum: {value} / {total_p}×{total_interval}");
+    // Note: we have covered _at most_ the whole interval. There may be missing spots since we
+    // never assign any value to intervals with `p_i = 0` (those do not contribute to the value but
+    // make the solution ill-defined).
+    // eprintln!("Value at optimum: {value} / {total_p}×{total_interval}");
 
     super::Estimate {
         bc_estimate: value,
@@ -302,6 +317,8 @@ fn solve(a: f64, b: f64, c: f64) -> f64 {
 }
 
 struct PrefixLookup {
+    /// Ordered list of active variable indices.
+    active: Vec<usize>,
     a: Vec<f64>,
     b: Vec<f64>,
     c: Vec<f64>,
@@ -309,7 +326,7 @@ struct PrefixLookup {
 
 impl PrefixLookup {
     fn is_empty(&self) -> bool {
-        self.a.is_empty()
+        self.active.is_empty()
     }
 
     fn adjust(&mut self, ps: &[f64], lambda: f64) {
@@ -347,6 +364,11 @@ impl PrefixLookup {
 
     fn prefix_sum_iterator(&self) -> impl Iterator<Item = (usize, usize, [f64; 3])> + '_ {
         let n = self.a.len();
+
+        // TODO: performance wise intervals must contain at least on active variable but intervals
+        // are not identified by their active variables (e.g. even with only 1 active 1..=2 and
+        // 1..=3 may have different constraint effects). Optimizing this means discarding
+        // intervals more efficiently than a simple test.
         (0..n).flat_map(move |j| {
             (j..n).scan([0.0; 3], move |acc, k| {
                 let a = self.a[k];
