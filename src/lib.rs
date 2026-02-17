@@ -1,3 +1,4 @@
+mod constraint;
 pub mod mixed;
 
 use statrs::distribution::ContinuousCDF;
@@ -8,8 +9,12 @@ pub struct Estimate {
     ///
     /// On average this is an over estimation. In the limit of samples it is the true coefficient.
     pub bc_estimate: f64,
+    /// A lower bound on the square of the Hellinger distance, which is a lower bound on the total
+    /// variation distance as well.
     pub hc_squared: f64,
-    pub total_variance_upper: f64,
+    /// A derived upper bound on the total variation distance. However, this is _not_ a guarantee
+    /// at all since it is based on the lower-bound estimate of the Hellinger distance.
+    pub total_variance_high: f64,
 }
 
 pub struct ConfidenceLevel {
@@ -88,6 +93,27 @@ impl ConfidenceLevel {
         Estimate::from_matched_quantiles(ps.collect(), qs.collect(), expand)
     }
 
+    /// Use numerical methods to find an upper-bound of the Bhattacharyya Coefficient that any CDF
+    /// within the Dvoretzky-Kiefer-Wolfowitz bounds could have.
+    ///
+    /// FIXME: this method is mathematically correct, I think, but numerically it isn't a perfect
+    /// upper-bound estimator. We're doing steps to determine solutions for the sum based on
+    /// possible roots-of-interval-lengths that fit and this method may round the wrong way; we
+    /// square the numerical value and do steps based on division. (E.g in a perfect match where BC
+    /// should `1` an upper-bound of `0.9999992030366093` is reported). That is of course
+    /// unfortunate and should probably be fixed.
+    ///
+    /// It is still much better than the unreliable estimator from the other module and provides a
+    /// tight bound for closely matching distributions, where the guaranteed estimators would be
+    /// far too cautious.
+    pub fn apply_constraint_maximizer(
+        &self,
+        sorted: &[f64],
+        cdf: &dyn ContinuousCDF<f64, f64>,
+    ) -> constraint::ConstraintEstimator {
+        constraint::apply(self, sorted, cdf)
+    }
+
     /// Adjustment of CDF with Dvoretzky-Kiefer-Wolfowitz bounds:
     ///
     /// P(sup|F_n - F| > eps) <= 2 * exp(-2n * eps**2)
@@ -109,6 +135,19 @@ impl ConfidenceLevel {
 }
 
 impl Estimate {
+    pub(crate) fn from_bhattarachya_coefficient(bc_estimate: f64) -> Self {
+        // Under-estimation of H²
+        let hc_squared = 1.0 - bc_estimate;
+        // High Bound of TVD based on fundamental form of Hellinger distance.
+        let total_variance_upper = 2.0f64.sqrt() * hc_squared.sqrt();
+
+        Estimate {
+            bc_estimate,
+            hc_squared,
+            total_variance_high: total_variance_upper,
+        }
+    }
+
     pub fn from_ecdf(sorted: &[f64], cdf: &dyn ContinuousCDF<f64, f64>) -> Self {
         assert!(!sorted.is_empty(), "No estimate for empty sample");
 
@@ -148,16 +187,7 @@ impl Estimate {
             .map(|(lp, lq)| (lp * lq).sqrt())
             .sum();
 
-        // Under-estimation of H²
-        let hc_squared = 1.0 - bc_estimate;
-        // High Bound of TVD based on fundamental form of Hellinger distance.
-        let total_variance_upper = 2.0f64.sqrt() * hc_squared.sqrt();
-
-        Estimate {
-            bc_estimate,
-            hc_squared,
-            total_variance_upper,
-        }
+        Estimate::from_bhattarachya_coefficient(bc_estimate)
     }
 
     fn diff_in_place_with_added_bias(slice: &mut [f64], expand: f64) {

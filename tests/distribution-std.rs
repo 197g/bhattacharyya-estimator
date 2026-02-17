@@ -44,8 +44,11 @@ fn check_ecdf(v: &[f64], n: &dyn ContinuousCDF<f64, f64>, actual_bc: f64) {
 
     let estimate = Estimate::from_ecdf(v, n);
     let e95 = ConfidenceLevel::P95.apply(v, n);
+    let e95_constraint = ConfidenceLevel::P95.apply_constraint_maximizer(v, n);
     let e99 = ConfidenceLevel::P99.apply(v, n);
+    let e99_constraint = ConfidenceLevel::P99.apply_constraint_maximizer(v, n);
     let e_always = ConfidenceLevel::from_magnitude(12.5).apply(v, n);
+    let c_always = ConfidenceLevel::from_magnitude(12.5).apply_constraint_maximizer(v, n);
 
     eprintln!("Actual {}", actual_bc);
     // This is probably too low, at least quite likely.
@@ -53,11 +56,16 @@ fn check_ecdf(v: &[f64], n: &dyn ContinuousCDF<f64, f64>, actual_bc: f64) {
     // This **must** be reliable, 12.5 digits of confidence! The hard thing is that this will also
     // be quite a way above `1.0` (a non-sense BC) in quite a few cases until a lot of data was
     // gathered.
-    eprintln!("Estimate {}", e_always.bc_estimate);
+    eprintln!("e-12 Estimate {}", e_always.bc_estimate);
+    eprintln!("Constraint {}", c_always.bc_estimate);
     // Eh. Will fail once in a while.
     eprintln!("P99 {}", e99.bc_estimate);
-    // Eh. Would fail every few runs of these tests.
+    // This is just numerically too low but mostly correct.
+    eprintln!("Constraint {}", e99_constraint.bc_estimate);
+    // Eh. Would fail every few runs of these tests (though DFW is not very tight in our use for
+    // larger sample sizes).
     eprintln!("P95 {}", e95.bc_estimate);
+    eprintln!("Constraint {}", e95_constraint.bc_estimate);
     eprintln!("");
 
     assert!(estimate.bc_estimate <= e95.bc_estimate);

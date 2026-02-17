@@ -156,6 +156,28 @@ impl SimplexEstimator {
         self.add_cone(vertex, coordinates, tvd_estimates);
     }
 
+    pub fn add_distribution_constraint(
+        &mut self,
+        cdf: impl ContinuousCDF<f64, f64> + 'static,
+        coordinates: &[f64],
+        tvd_estimates: &[f64],
+    ) {
+        struct EstimateFromCdf<C>(C);
+
+        impl<C: ContinuousCDF<f64, f64>> Estimator for EstimateFromCdf<C> {
+            fn for_sample(
+                &mut self,
+                sample: &[f64],
+                level: &crate::ConfidenceLevel,
+            ) -> crate::Estimate {
+                level.apply_constraint_maximizer(sample, &self.0).estimate
+            }
+        }
+
+        let vertex = Box::new(EstimateFromCdf(cdf));
+        self.add_cone(vertex, coordinates, tvd_estimates);
+    }
+
     fn add_cone(&mut self, vertex: Box<dyn Estimator>, coordinates: &[f64], tvd_estimates: &[f64]) {
         assert!(
             coordinates.len() == self.dim * self.dim,
