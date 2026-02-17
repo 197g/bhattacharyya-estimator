@@ -9,8 +9,12 @@ pub struct Estimate {
     ///
     /// On average this is an over estimation. In the limit of samples it is the true coefficient.
     pub bc_estimate: f64,
+    /// A lower bound on the square of the Hellinger distance, which is a lower bound on the total
+    /// variation distance as well.
     pub hc_squared: f64,
-    pub total_variance_upper: f64,
+    /// A derived upper bound on the total variation distance. However, this is _not_ a guarantee
+    /// at all since it is based on the lower-bound estimate of the Hellinger distance.
+    pub total_variance_high: f64,
 }
 
 pub struct ConfidenceLevel {
@@ -106,7 +110,7 @@ impl ConfidenceLevel {
         &self,
         sorted: &[f64],
         cdf: &dyn ContinuousCDF<f64, f64>,
-    ) -> Estimate {
+    ) -> constraint::ConstraintEstimator {
         constraint::apply(self, sorted, cdf)
     }
 
@@ -131,6 +135,19 @@ impl ConfidenceLevel {
 }
 
 impl Estimate {
+    pub(crate) fn from_bhattarachya_coefficient(bc_estimate: f64) -> Self {
+        // Under-estimation of H²
+        let hc_squared = 1.0 - bc_estimate;
+        // High Bound of TVD based on fundamental form of Hellinger distance.
+        let total_variance_upper = 2.0f64.sqrt() * hc_squared.sqrt();
+
+        Estimate {
+            bc_estimate,
+            hc_squared,
+            total_variance_high: total_variance_upper,
+        }
+    }
+
     pub fn from_ecdf(sorted: &[f64], cdf: &dyn ContinuousCDF<f64, f64>) -> Self {
         assert!(!sorted.is_empty(), "No estimate for empty sample");
 
@@ -170,16 +187,7 @@ impl Estimate {
             .map(|(lp, lq)| (lp * lq).sqrt())
             .sum();
 
-        // Under-estimation of H²
-        let hc_squared = 1.0 - bc_estimate;
-        // High Bound of TVD based on fundamental form of Hellinger distance.
-        let total_variance_upper = 2.0f64.sqrt() * hc_squared.sqrt();
-
-        Estimate {
-            bc_estimate,
-            hc_squared,
-            total_variance_upper,
-        }
+        Estimate::from_bhattarachya_coefficient(bc_estimate)
     }
 
     fn diff_in_place_with_added_bias(slice: &mut [f64], expand: f64) {

@@ -55,6 +55,14 @@
 //!
 //! I don't know, maybe I've convinced myself of something completely untrue here.
 
+#[non_exhaustive]
+pub struct ConstraintEstimator {
+    pub estimate: super::Estimate,
+    /// The amount of the sample covered in the estimate. Intervals that have a zero-probability in
+    /// the reference continuous CDF are never covered.
+    pub distributed: f64,
+}
+
 /// See module documentation.
 ///
 /// FIXME: this method is mathematically correct, I think, but numerically it isn't a perfect
@@ -83,7 +91,7 @@ pub fn apply(
     level: &super::ConfidenceLevel,
     sorted: &[f64],
     cdf: &dyn super::ContinuousCDF<f64, f64>,
-) -> super::Estimate {
+) -> ConstraintEstimator {
     // FIXME: goes out of sync when we remove intervals of variables. We must make a copy.
     fn upper_at(qs: &[f64], i: usize, expand: f64) -> f64 {
         (qs[i] + expand).min(1.0)
@@ -248,17 +256,21 @@ pub fn apply(
         }
 
         // Count contribution from open variables.
-        for (idx, (p_i, o)) in sqrtp[j..=k].iter_mut().zip(&mut offset[j..=k]).enumerate() {
-            if *p_i > 0.0 {
-                let p_i = core::mem::take(p_i);
+        for idx in j..=k {
+            let p_i = &mut sqrtp[idx];
+            let o = &mut offset[idx];
+
+            if !(*p_i == 0.0) {
+                let coeff_i = core::mem::replace(p_i, 0.0);
+
                 let r_i = *o;
-                let maximum = uppers[j + idx] - lowers_pre_j[j + idx];
+                let maximum = uppers[idx] - lowers_pre_j[idx];
                 let r_i = f64::sqrt(maximum).min(r_i);
                 *o = r_i;
 
-                total_interval += r_i * r_i;
-                total_p += p_i * p_i;
-                value += p_i * r_i;
+                total_interval = r_i.mul_add(r_i, total_interval);
+                total_p = coeff_i.mul_add(coeff_i, total_p);
+                value = coeff_i.mul_add(r_i, value);
             }
         }
 
@@ -270,10 +282,9 @@ pub fn apply(
     // make the solution ill-defined).
     // eprintln!("Value at optimum: {value} / {total_p}×{total_interval}");
 
-    super::Estimate {
-        bc_estimate: value,
-        hc_squared: 1.0 - value,
-        total_variance_upper: 2.0f64.sqrt() * (1.0 - value).sqrt(),
+    ConstraintEstimator {
+        estimate: super::Estimate::from_bhattarachya_coefficient(value),
+        distributed: total_interval,
     }
 }
 
