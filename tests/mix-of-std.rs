@@ -23,27 +23,54 @@ fn compare_sample(a: (f64, f64), b: (f64, f64), lambda: f64) {
 
     let mut estimator = mixed::SimplexEstimator::new(
         const { core::num::NonZeroUsize::new(2).unwrap() },
-        ConfidenceLevel::from_magnitude(2.0),
+        ConfidenceLevel::from_magnitude(5.0),
     );
 
     mixture.add_to(&mut estimator);
     let estimate = estimator.estimate(&samples);
 
+    let mut ival = 0.0..1.0f64;
+
     for facet in &estimate.facets {
         eprintln!("Facet: {:?}", estimate.offsets_of(facet));
         eprintln!(
-            "Bound: {:?} / precise would be {:?}",
+            "Bound: {:?} / total distance would be {:?}",
             facet.hc_squared, mixture.h2_precise
         );
-        eprintln!("{:?}", estimate.base_of(facet));
 
-        let only_facet = estimate.offsets_of(facet).next().unwrap();
+        let base_of = estimate.base_of(facet);
+        let only_facet = estimate.offsets_of(facet).nth(0).unwrap();
+
+        let left_bound = base_of[1] + only_facet[1];
+        let right_bound = base_of[0] + only_facet[0];
 
         assert!(
-            (estimate.base_of(facet)[1] < mixture.lambda) == (only_facet[1] > 0.0),
-            "The facet must point towards the mix lambda"
+            (base_of[1] > mixture.lambda) == (only_facet[1] < 0.0)
+             && (base_of[0] > mixture.lambda) == (only_facet[0] < 0.0),
+            "The facet must point towards the mix factor, Base {base_of:?} and facet {only_facet:?} \
+            do not point towards lambda {lambda}"
         );
+
+        assert!(
+            (base_of[1] <= mixture.lambda) == (left_bound <= mixture.lambda),
+            "The facet must constrain the mix factor, Base {base_of:?} and facet {only_facet:?} \
+            do not constrain lambda {lambda}"
+        );
+
+        assert!(
+            (base_of[0] >= 1.0 - mixture.lambda) == (right_bound >= 1.0 - mixture.lambda),
+            "The facet must constrain the mix factor, Base {base_of:?} and facet {only_facet:?} \
+            do not constrain lambda {lambda}"
+        );
+
+        if only_facet[1] < 0.0 {
+            ival.end = ival.end.min(left_bound);
+        } else {
+            ival.start = ival.start.max(1.0 - right_bound);
+        }
     }
+
+    eprintln!("Lambda verified to be in {} in [{ival:?}]", mixture.lambda);
 }
 
 #[test]
@@ -64,6 +91,11 @@ fn generate_sample_0p9() {
 #[test]
 fn generate_sample_0p5() {
     compare_sample((0.0, 1.0), (0.0, 2.0), 0.5);
+}
+
+#[test]
+fn generate_sample_0p5_wide() {
+    compare_sample((0.0, 1.0), (0.0, 10.0), 0.5);
 }
 
 impl statrs::statistics::Min<f64> for Mixture2 {
