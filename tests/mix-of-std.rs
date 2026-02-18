@@ -119,9 +119,9 @@ impl ContinuousCDF<f64, f64> for Mixture2 {
 impl rand::distributions::Distribution<f64> for Mixture2 {
     fn sample<R: rand::Rng + ?Sized>(&self, rng: &mut R) -> f64 {
         if rng.gen::<f64>() < self.lambda {
-            self.left.sample(rng)
+            rng.sample(&self.left)
         } else {
-            self.right.sample(rng)
+            rng.sample(&self.right)
         }
     }
 }

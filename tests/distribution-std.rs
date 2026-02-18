@@ -44,11 +44,17 @@ fn check_ecdf(v: &[f64], n: &dyn ContinuousCDF<f64, f64>, actual_bc: f64) {
 
     let estimate = Estimate::from_ecdf(v, n);
     let e95 = ConfidenceLevel::P95.apply(v, n);
-    let e95_constraint = ConfidenceLevel::P95.apply_constraint_maximizer(v, n);
+    let e95_constraint = ConfidenceLevel::P95
+        .apply_constraint_maximizer(v, n)
+        .estimate;
     let e99 = ConfidenceLevel::P99.apply(v, n);
-    let e99_constraint = ConfidenceLevel::P99.apply_constraint_maximizer(v, n);
+    let e99_constraint = ConfidenceLevel::P99
+        .apply_constraint_maximizer(v, n)
+        .estimate;
     let e_always = ConfidenceLevel::from_magnitude(12.5).apply(v, n);
-    let c_always = ConfidenceLevel::from_magnitude(12.5).apply_constraint_maximizer(v, n);
+    let c_always = ConfidenceLevel::from_magnitude(12.5)
+        .apply_constraint_maximizer(v, n)
+        .estimate;
 
     eprintln!("Actual {}", actual_bc);
     // This is probably too low, at least quite likely.
