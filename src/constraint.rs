@@ -109,7 +109,7 @@ pub fn apply(
     // care of ensuring that the error does not *add* up from this but rather the extra intervals
     // can be utilized. The only reason to reduce the data here is that the loop below is otherwise
     // cubic in runtime so we make it quadratic...
-    let step = count.powf(2.0 / 3.0).ceil() as usize;
+    let step = (count.powf(2.0 / 3.0) / count.ln().powf(1.0 / 3.0)).ceil() as usize;
 
     let mut qs: Vec<_> = (0..sorted.len())
         .step_by(step)
