@@ -3,20 +3,6 @@ pub mod mixed;
 
 use statrs::distribution::ContinuousCDF;
 
-#[derive(Clone, Debug)]
-pub struct Estimate {
-    /// An estimate of the Bhattacharyya coefficient.
-    ///
-    /// On average this is an over estimation. In the limit of samples it is the true coefficient.
-    pub bc_estimate: f64,
-    /// A lower bound on the square of the Hellinger distance, which is a lower bound on the total
-    /// variation distance as well.
-    pub hc_squared: f64,
-    /// A derived upper bound on the total variation distance. However, this is _not_ a guarantee
-    /// at all since it is based on the lower-bound estimate of the Hellinger distance.
-    pub total_variance_high: f64,
-}
-
 pub struct ConfidenceLevel {
     dkw_constant: f64,
 }
@@ -134,6 +120,20 @@ impl ConfidenceLevel {
     }
 }
 
+#[derive(Clone, Debug)]
+pub struct Estimate {
+    /// An estimate of the Bhattacharyya coefficient.
+    ///
+    /// On average this is an over estimation. In the limit of samples it is the true coefficient.
+    pub bc_estimate: f64,
+    /// A lower bound on the square of the Hellinger distance, which is a lower bound on the total
+    /// variation distance as well.
+    pub hc_squared: f64,
+    /// A derived upper bound on the total variation distance. However, this is _not_ a guarantee
+    /// at all since it is based on the lower-bound estimate of the Hellinger distance.
+    pub total_variance_high: f64,
+}
+
 impl Estimate {
     pub(crate) fn from_bhattarachya_coefficient(bc_estimate: f64) -> Self {
         // Under-estimation of H²
@@ -199,4 +199,83 @@ impl Estimate {
             *x = (*x + expand).clamp(0.0, 1.0) - (pre - expand).clamp(0.0, 1.0);
         })
     }
+}
+
+/// Represents the hypothesis that the Hellinger distance between an sampled distribution and an
+/// analytical distribution is strictly less than an expected value.
+pub struct MaximumHellingerHypothesis {
+    expected: f64,
+}
+
+impl MaximumHellingerHypothesis {
+    pub fn new(expected: f64) -> Self {
+        assert!(expected >= 0.0 && expected <= 1.0);
+        Self { expected }
+    }
+
+    pub fn e_value(&self, sorted: &[f64], cdf: &dyn ContinuousCDF<f64, f64>) -> Evalue {
+        let bc_bound = 1.0 - self.expected.powi(2);
+        let count = sorted.len() as f64;
+
+        // Choose steps wider than `count.sqrt()`. This makes sure that the overestimate added on
+        // each interval by the confidence level correction (the `expand` variable) still
+        // disappears in the limit when `n -> inf`. The choice is somewhat arbitrary though.
+        // Smaller step sizes require far more data to yield a useful BC estimate at highly
+        // reliable confidence levels.
+        let skip = count.powf(3.0 / 4.0).ceil() as usize;
+
+        // This isn't the *only* way to chunk up our samples. We may do an adaptive one? Any way of
+        // chunking them up is permissible for an estimate! Just don't *try* different chunking as
+        // we'd have to correct our confidence bound respectively.
+
+        // Quantiles according to limit distribution.
+        let ps: Vec<_> = (0..sorted.len())
+            .step_by(skip)
+            .map(|n| (1. + n as f64) / count)
+            .collect();
+
+        // Quantiles according to model CDF.
+        let qs: Vec<_> = sorted.chunks(skip).map(|arr| cdf.cdf(arr[0])).collect();
+
+        // Find an interval eps such that `max(P) BC(P, Q) {<P, E> <= eps} <= bc_bound` where E is
+        // the empirical distribution and <,> is the absolute norm / total variance. That bound is
+        // a lower bound, it will also hold for all smaller values. Note that the condition is
+        // incompatible with our hypothesis which is of the form `BC(P, Q) > bc_bound = 1 - h²`.
+        //
+        // So, assuming that the hypothesis is true implies the true total variance ŧ between sample
+        // and its underlying distribution to be great than `eps`. The probability of this is
+        // bounded from above by the Dvoretzky-Kiefer-Wolfowitz bound (2 * exp(-2N * eps**2)). We
+        // construct the random variable `2 * N * eps` for the sample. Then the contribution to the
+        // expected value of that can be bounded by `4 * N * ŧ * exp(-2N * ŧ**2)` which is the
+        // density of a Weibull distribution (λ = 1 / sqrt(2 * N), k = 2).
+        //
+        // As E-value we just return the random value. This has expected value bounded by `1` as
+        // just demonstrated so it is a valid E-value for the hypothesis.
+        let (mut min, mut max) = (0.0, 1.0);
+
+        // FIXME: bisection search is a very crude method here. The task of
+        // `from_matched_quantiles` is a dot product which we can surely incrementally compute much
+        // more efficiently. Or find its zero-crossing with `bc_bound` as it is monotonic.
+        for _ in 0..64 {
+            let expand = f64::midpoint(min, max);
+            // FIXME: for efficiency, do not clone here in every iteration.
+            let estimate = Estimate::from_matched_quantiles(ps.clone(), qs.clone(), expand);
+
+            if estimate.bc_estimate > bc_bound {
+                max = expand;
+            } else {
+                min = expand;
+            }
+        }
+
+        let eps = min;
+
+        Evalue {
+            value: 2.0 * count * eps,
+        }
+    }
+}
+
+pub struct Evalue {
+    pub value: f64,
 }
