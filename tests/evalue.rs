@@ -6,7 +6,7 @@ use statrs::distribution::{ContinuousCDF, Normal};
 #[test]
 fn test_evalue() {
     let n = Normal::new(0.0, 1.0).unwrap();
-    const COUNT: usize = 1000_000;
+    const COUNT: usize = 1_000_000;
 
     let mut v: Vec<f64> = rand::thread_rng()
         .sample_iter(OpenClosed01)
@@ -47,7 +47,15 @@ fn check_ecdf(v: &[f64], n: &dyn ContinuousCDF<f64, f64>, actual_bc: f64) {
     let evalue = MaximumHellingerHypothesis::new(1.0 / 3.0).e_value(v, n);
     eprintln!("E-Value (0.3333) {}", evalue.value);
 
-    let strictish = (hellinger.ln() - 0.2).exp();
+    let strictish = (hellinger.ln() - 0.25).exp();
+    let evalue = MaximumHellingerHypothesis::new(strictish).e_value(v, n);
+    eprintln!("E-Value ({strictish:.4}) {}", evalue.value);
+
+    let strictish = (hellinger.ln() - 0.0625).exp();
+    let evalue = MaximumHellingerHypothesis::new(strictish).e_value(v, n);
+    eprintln!("E-Value ({strictish:.4}) {}", evalue.value);
+
+    let strictish = (hellinger.ln() - 0.01575).exp();
     let evalue = MaximumHellingerHypothesis::new(strictish).e_value(v, n);
     eprintln!("E-Value ({strictish:.4}) {}", evalue.value);
 }
