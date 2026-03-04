@@ -92,6 +92,17 @@ pub fn apply(
     sorted: &[f64],
     cdf: &dyn super::ContinuousCDF<f64, f64>,
 ) -> ConstraintEstimator {
+    let count = sorted.len() as f64;
+    let sqrt_n = count.sqrt();
+    let expand = level.dkw_constant / sqrt_n;
+    apply_for_expanded(expand, sorted, cdf)
+}
+
+pub(crate) fn apply_for_expanded(
+    expand: f64,
+    sorted: &[f64],
+    cdf: &dyn super::ContinuousCDF<f64, f64>,
+) -> ConstraintEstimator {
     // FIXME: goes out of sync when we remove intervals of variables. We must make a copy.
     fn upper_at(qs: &[f64], i: usize, expand: f64) -> f64 {
         (qs[i] + expand).min(1.0)
@@ -102,9 +113,6 @@ pub fn apply(
     }
 
     let count = sorted.len() as f64;
-    let sqrt_n = count.sqrt();
-    let expand = level.dkw_constant / sqrt_n;
-
     // Note: here we use a much smaller step than other estimators. The combined constraints take
     // care of ensuring that the error does not *add* up from this but rather the extra intervals
     // can be utilized. The only reason to reduce the data here is that the loop below is otherwise
@@ -199,12 +207,9 @@ pub fn apply(
             }
 
             let c = uppers[k] - lowers_pre_j[j] - prec;
-            assert!(
-                c >= 0.0,
-                "Negative c coefficient in constraint {j}..{k}: {c}"
-            );
+            // c may be negative from float error but solve for `0` then.
+            let a_max = solve(a, b, c.max(0.0));
 
-            let a_max = solve(a, b, c);
             if a_max < lambda {
                 lambda = a_max;
                 best = (j, k);

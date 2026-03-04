@@ -274,6 +274,33 @@ impl MaximumHellingerHypothesis {
             value: 2.0 * count * eps,
         }
     }
+
+    pub fn e_value_by_constraint(&self, sorted: &[f64], cdf: &dyn ContinuousCDF<f64, f64>) -> Evalue {
+        let bc_bound = 1.0 - self.expected.powi(2);
+        let count = sorted.len() as f64;
+
+        let (mut min, mut max) = (0.0, 1.0);
+
+        // FIXME: it'd be nice to use this but the numerical problem of underestimation is really
+        // bad here. We get no guarantee about how badly we will underestimate the true TVD here
+        // and that means the whole expected value is bogus.
+        for _ in 0..64 {
+            let expand = f64::midpoint(min, max);
+            let constraints = constraint::apply_for_expanded(expand, sorted, cdf);
+
+            if constraints.estimate.bc_estimate * 1.001 > bc_bound {
+                max = expand;
+            } else {
+                min = expand;
+            }
+        }
+
+        let eps = min;
+
+        Evalue {
+            value: 2.0 * count * eps,
+        }
+    }
 }
 
 pub struct Evalue {
