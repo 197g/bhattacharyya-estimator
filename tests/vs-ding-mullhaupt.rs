@@ -3,7 +3,6 @@
 //! Ding, R., & Mullhaupt, A. (2023). Empirical Squared Hellinger Distance Estimator and Generalizations to a Family of α-Divergence Estimators. Entropy, 25(4), 612. https://doi.org/10.3390/e25040612
 use estimated_hellinger::ConfidenceLevel;
 
-use rand::{distributions::OpenClosed01, Rng as _};
 use statrs::distribution::{ContinuousCDF, Normal};
 
 #[test]
@@ -71,8 +70,7 @@ fn compare_cauchy_normal(p: (f64, f64), q: (f64, f64)) {
 
 fn compare_samples(dist_p: &dyn ContinuousCDF<f64, f64>, dist_q: &dyn ContinuousCDF<f64, f64>) {
     for sample_size in [10, 32, 100, 316, 1_000, 3_162, 10_000, 31_622] {
-        let mut v: Vec<f64> = rand::thread_rng()
-            .sample_iter(OpenClosed01)
+        let mut v: Vec<f64> = rand::random_iter()
             .take(sample_size)
             .map(|x| dist_p.inverse_cdf(x))
             .collect();

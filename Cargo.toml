@@ -6,7 +6,7 @@ publish = false
 license = "EUPL-1.1+"
 
 [dependencies.statrs]
-version = "0.18"
+version = "0.19"
 optional = true
 default-features = false
 
@@ -15,7 +15,7 @@ default = ["statrs"]
 statrs = ["dep:statrs"]
 
 [dev-dependencies]
-rand = "0.8.5"
+rand = "0.10"
 statrs = { version = "*", default-features = false, features = ["rand"] }
 
 [[test]]

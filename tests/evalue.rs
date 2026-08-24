@@ -1,6 +1,5 @@
 use estimated_hellinger::MaximumHellingerHypothesis;
 
-use rand::{distributions::OpenClosed01, Rng as _};
 use statrs::distribution::{ContinuousCDF, Normal};
 
 #[test]
@@ -8,8 +7,7 @@ fn test_evalue() {
     let n = Normal::new(0.0, 1.0).unwrap();
     const COUNT: usize = 1_000_000;
 
-    let mut v: Vec<f64> = rand::thread_rng()
-        .sample_iter(OpenClosed01)
+    let mut v: Vec<f64> = rand::random_iter()
         .take(COUNT * 20)
         .map(|x| n.inverse_cdf(x))
         .collect();

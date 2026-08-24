@@ -1,15 +1,13 @@
 use estimated_hellinger::{ConfidenceLevel, Estimate};
 
-use rand::{distributions::OpenClosed01, Rng as _};
-use statrs::distribution::{ContinuousCDF, Normal};
+use statrs::distribution::{ContinuousCDF, Normal, Uniform};
 
 #[test]
-fn generate_sample() {
+fn normal_sampling() {
     let n = Normal::new(0.0, 1.0).unwrap();
     const COUNT: usize = 4_000_000;
 
-    let mut v: Vec<f64> = rand::thread_rng()
-        .sample_iter(OpenClosed01)
+    let mut v: Vec<f64> = rand::random_iter()
         .take(COUNT)
         .map(|x| n.inverse_cdf(x))
         .collect();
@@ -38,6 +36,35 @@ fn generate_sample() {
 
         check_ecdf(&v, &above, affinity);
     }
+}
+
+#[test]
+fn unit_interval() {
+    let n = Uniform::standard();
+    const COUNT: usize = 4_000_000;
+
+    let mut v: Vec<f64> = rand::random_iter().take(COUNT).collect();
+    v.sort_by(|a, b| a.total_cmp(b));
+
+    let r = ConfidenceLevel::P95.confidence_radius(COUNT);
+    eprintln!("P95 expansion: {r}");
+
+    for (idx, v) in v.iter().enumerate().step_by(300) {
+        let base = (1.0 + idx as f64) / (COUNT as f64);
+        let cdf = n.cdf(*v);
+
+        assert!(base - r <= cdf);
+        assert!(cdf <= base + r);
+    }
+
+    // Against itself, we have a very very high BC. In particular the extremely high confidence
+    // levels must /never/ (in a computation heat death sense) overestimate this.
+    // NOTE: however, we are also verifying the statrs implementation here! The constraint system is
+    // *highly* sensitive. If the inverse cdf implementation does not actually agree with the CDF
+    // data and our randomness is slightly off, we *may* detect a non-zero Hellinger distance. I
+    // suspect this to be the case based on experimental data where the CDF does not lie within the
+    // DKW bounds of p95 a lot of the times.
+    check_ecdf(&v, &n, 1.0);
 }
 
 fn check_ecdf(v: &[f64], n: &dyn ContinuousCDF<f64, f64>, actual_bc: f64) {
