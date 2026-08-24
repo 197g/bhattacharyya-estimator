@@ -55,6 +55,16 @@
 //!
 //! I don't know, maybe I've convinced myself of something completely untrue here.
 
+// I disagree with clippy on enough of these to disable this for consistency.
+#![allow(clippy::needless_range_loop)]
+// Similarly here, at least right now I have readability concerns:
+//
+//     !(val >= 1.0)
+//     val.partial_cmp(&1.0).is_none_or(Ordering::is_le)
+//
+// That seems rather awfully verbose. Open to suggestions here.
+#![expect(clippy::neg_cmp_op_on_partial_ord)]
+
 #[non_exhaustive]
 pub struct ConstraintEstimator {
     pub estimate: super::Estimate,

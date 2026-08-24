@@ -44,14 +44,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "estimated-hellinger"
-version = "0.0.0"
-dependencies = [
- "rand",
- "statrs",
-]
-
-[[package]]
 name = "getrandom"
 version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -61,6 +53,14 @@ dependencies = [
  "libc",
  "r-efi",
  "rand_core",
+]
+
+[[package]]
+name = "hellinger-estimates"
+version = "1.0.0"
+dependencies = [
+ "rand",
+ "statrs",
 ]
 
 [[package]]

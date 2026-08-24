@@ -244,7 +244,7 @@ pub struct MaximumHellingerHypothesis {
 
 impl MaximumHellingerHypothesis {
     pub fn new(expected: f64) -> Self {
-        assert!(expected >= 0.0 && expected <= 1.0);
+        assert!((0.0..=1.0).contains(&expected));
         Self { expected }
     }
 

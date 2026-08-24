@@ -1,9 +1,16 @@
 [package]
-name = "estimated-hellinger"
-version = "0.0.0"
-edition = "2021"
-publish = false
+name = "hellinger-estimates"
+version = "1.0.0"
+description = "Tests for Hellinger distance between an analytical CDF and an empirical sample"
+edition = "2024"
+documentation = "https://docs.rs/hellinger-estimates"
+categories = ["statistics"]
+rust-version = "1.88"
+
+authors = ["Aurelia Molzer <5550310+197g@users.noreply.github.com>"]
 license = "EUPL-1.1+"
+repository = "https://github.com/197g/bhattacharyya-estimator"
+readme = "Readme.md"
 
 [dependencies.statrs]
 version = "0.19"
