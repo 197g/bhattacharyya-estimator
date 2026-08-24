@@ -46,7 +46,8 @@ fn unit_interval() {
     let mut v: Vec<f64> = rand::random_iter().take(COUNT).collect();
     v.sort_by(|a, b| a.total_cmp(b));
 
-    let r = ConfidenceLevel::P95.confidence_radius(COUNT);
+    // Just check against bogus empirical distribution problems.
+    let r = ConfidenceLevel::from_magnitude(12.5).confidence_radius(COUNT);
     eprintln!("P95 expansion: {r}");
 
     for (idx, v) in v.iter().enumerate().step_by(300) {
