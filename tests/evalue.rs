@@ -33,6 +33,28 @@ fn test_evalue() {
 }
 
 fn check_ecdf(v: &[f64], n: &dyn ContinuousCDF<f64, f64>, actual_bc: f64) {
+    fn verify(actual: f64, hypoth: f64, evalue: estimated_hellinger::Evalue) -> &'static str {
+        // E-Value requires that the expectation <= 1.0 in the world where hypothesis holds.
+        // So under-reporting is simply a failure to reject, over reporting a problem with the
+        // E-value. Of course, the setup below only does a single sample and not in fact a real
+        // verification of the expected value (e.g a t-test against samples of computed E-Values).
+        // Please fix this by contribution if you read this.
+        if actual > hypoth {
+            if evalue.value >= 1.0 {
+                "PASS"
+            } else {
+                // Okay, but suboptimal.
+                "NO REJECTION"
+            }
+        } else {
+            if evalue.value <= 1.0 {
+                "PASS"
+            } else {
+                "FAIL"
+            }
+        }
+    }
+
     // The bad confidence levels, and in particular none-confidence level, will happen to
     // underestimate the true one by a tiny bit sometimes. That's expected?
     //
@@ -42,22 +64,22 @@ fn check_ecdf(v: &[f64], n: &dyn ContinuousCDF<f64, f64>, actual_bc: f64) {
     eprintln!("Actual {hellinger}");
 
     let evalue = MaximumHellingerHypothesis::new(hellinger).e_value(v, n);
-    eprintln!("E-Value ({hellinger:.4}) {}", evalue.value);
+    eprintln!("E-Value ({hellinger:.4}) {} {}", evalue.value, verify(hellinger, hellinger, evalue));
 
     let evalue = MaximumHellingerHypothesis::new(1.0 / 3.0).e_value(v, n);
-    eprintln!("E-Value (0.3333) {}", evalue.value);
+    eprintln!("E-Value (0.3333) {} {}", evalue.value, verify(hellinger, 1.0 / 3.0, evalue));
 
     let strictish = (hellinger.ln() - 0.25).exp();
     let evalue = MaximumHellingerHypothesis::new(strictish).e_value(v, n);
-    eprintln!("E-Value ({strictish:.4}) {}", evalue.value);
+    eprintln!("E-Value ({strictish:.4}) {} {}", evalue.value, verify(hellinger, strictish, evalue));
 
     let strictish = (hellinger.ln() - 0.0625).exp();
     let evalue = MaximumHellingerHypothesis::new(strictish).e_value(v, n);
-    eprintln!("E-Value ({strictish:.4}) {}", evalue.value);
+    eprintln!("E-Value ({strictish:.4}) {} {}", evalue.value, verify(hellinger, strictish, evalue));
 
     let strictish = (hellinger.ln() - 0.01575).exp();
     let evalue = MaximumHellingerHypothesis::new(strictish).e_value(v, n);
-    eprintln!("E-Value ({strictish:.4}) {}", evalue.value);
+    eprintln!("E-Value ({strictish:.4}) {} {}", evalue.value, verify(hellinger, strictish, evalue));
 }
 
 fn normal_square_bc(a: (f64, f64), b: (f64, f64)) -> f64 {
