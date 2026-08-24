@@ -303,7 +303,7 @@ impl MaximumHellingerHypothesis {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct Evalue {
     pub value: f64,
 }

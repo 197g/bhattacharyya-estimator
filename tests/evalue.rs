@@ -10,11 +10,13 @@ fn test_evalue() {
 
     let mut v: Vec<f64> = rand::thread_rng()
         .sample_iter(OpenClosed01)
-        .take(COUNT)
+        .take(COUNT * 20)
         .map(|x| n.inverse_cdf(x))
         .collect();
 
-    v.sort_by(|a, b| a.total_cmp(b));
+    for samples in v.as_chunks_mut::<COUNT>().0 {
+        samples.sort_by(|a, b| a.total_cmp(b));
+    }
 
     for (mean, stddev) in [
         (0.0, 1.0),
@@ -28,11 +30,12 @@ fn test_evalue() {
         let above = Normal::new(mean, stddev).unwrap();
         let affinity = normal_square_bc((0.0, 1.0), (mean, stddev));
 
-        check_ecdf(&v, &above, affinity);
+        check_ecdf(v.as_chunks::<COUNT>().0, &above, affinity);
     }
 }
 
-fn check_ecdf(v: &[f64], n: &dyn ContinuousCDF<f64, f64>, actual_bc: f64) {
+#[rustfmt::skip] // No unnecessary line breaks.. Ugh. Might write our own Display for this.
+fn check_ecdf<const N: usize>(v: &[[f64; N]], n: &dyn ContinuousCDF<f64, f64>, actual_bc: f64) {
     fn verify(actual: f64, hypoth: f64, evalue: estimated_hellinger::Evalue) -> &'static str {
         // E-Value requires that the expectation <= 1.0 in the world where hypothesis holds.
         // So under-reporting is simply a failure to reject, over reporting a problem with the
@@ -55,6 +58,17 @@ fn check_ecdf(v: &[f64], n: &dyn ContinuousCDF<f64, f64>, actual_bc: f64) {
         }
     }
 
+    let evalue_expectation = |hypo: MaximumHellingerHypothesis| {
+        let mut acc = estimated_hellinger::Evalue { value: 0.0 };
+
+        for samples in v {
+            acc.value +=  hypo.e_value(samples, n).value;
+        }
+
+        acc.value /= v.len() as f64;
+        acc
+    };
+
     // The bad confidence levels, and in particular none-confidence level, will happen to
     // underestimate the true one by a tiny bit sometimes. That's expected?
     //
@@ -63,23 +77,29 @@ fn check_ecdf(v: &[f64], n: &dyn ContinuousCDF<f64, f64>, actual_bc: f64) {
     let hellinger = (1.0 - actual_bc).sqrt();
     eprintln!("Actual {hellinger}");
 
-    let evalue = MaximumHellingerHypothesis::new(hellinger).e_value(v, n);
-    eprintln!("E-Value ({hellinger:.4}) {} {}", evalue.value, verify(hellinger, hellinger, evalue));
+    let judge = |hyp, evalue| verify(hellinger, hyp, evalue);
 
-    let evalue = MaximumHellingerHypothesis::new(1.0 / 3.0).e_value(v, n);
-    eprintln!("E-Value (0.3333) {} {}", evalue.value, verify(hellinger, 1.0 / 3.0, evalue));
+    let evalue = evalue_expectation(MaximumHellingerHypothesis::new(hellinger));
+    eprintln!("E-Value ({hellinger:.4}) {:?} {}", evalue, judge(hellinger, evalue));
+
+    let evalue = evalue_expectation(MaximumHellingerHypothesis::new(1.0 / 3.0));
+    eprintln!("E-Value (0.3333) {:?} {}", evalue, judge(1.0 / 3.0, evalue));
 
     let strictish = (hellinger.ln() - 0.25).exp();
-    let evalue = MaximumHellingerHypothesis::new(strictish).e_value(v, n);
-    eprintln!("E-Value ({strictish:.4}) {} {}", evalue.value, verify(hellinger, strictish, evalue));
+    let evalue = evalue_expectation(MaximumHellingerHypothesis::new(strictish));
+    eprintln!("E-Value ({strictish:.4}) {:?} {}", evalue, judge(strictish, evalue));
 
     let strictish = (hellinger.ln() - 0.0625).exp();
-    let evalue = MaximumHellingerHypothesis::new(strictish).e_value(v, n);
-    eprintln!("E-Value ({strictish:.4}) {} {}", evalue.value, verify(hellinger, strictish, evalue));
+    let evalue = evalue_expectation(MaximumHellingerHypothesis::new(strictish));
+    eprintln!("E-Value ({strictish:.4}) {:?} {}", evalue, judge(strictish, evalue));
 
     let strictish = (hellinger.ln() - 0.01575).exp();
-    let evalue = MaximumHellingerHypothesis::new(strictish).e_value(v, n);
-    eprintln!("E-Value ({strictish:.4}) {} {}", evalue.value, verify(hellinger, strictish, evalue));
+    let evalue = evalue_expectation(MaximumHellingerHypothesis::new(strictish));
+    eprintln!("E-Value ({strictish:.4}) {:?} {}", evalue, judge(strictish, evalue));
+
+    let strictish = (hellinger.ln() - 0.0001575).exp();
+    let evalue = evalue_expectation(MaximumHellingerHypothesis::new(strictish));
+    eprintln!("E-Value ({strictish:.4}) {:?} {}", evalue, judge(strictish, evalue));
 }
 
 fn normal_square_bc(a: (f64, f64), b: (f64, f64)) -> f64 {
