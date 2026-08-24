@@ -144,7 +144,7 @@ pub(crate) fn apply_for_expanded(
 
     let mut cdf_in_edf = true;
     for idx in 0..ps.len() {
-        cdf_in_edf &= lowers[idx] >= ps[idx].above;
+        cdf_in_edf &= lowers[idx] <= ps[idx].above;
         cdf_in_edf &= ps[idx].below <= uppers[idx];
     }
 
@@ -209,14 +209,8 @@ pub(crate) fn apply_for_expanded(
     // Here we need an underestimation to initialize the constraint system.
     let raw_a: Vec<_> = ps.iter().map(|ival| ival.below).collect();
 
-    let raw_b: Vec<_> = (0..raw_a.len())
-        .map(|i| {
-            2.0 * {
-                let inner = FloatVal::from_mul(ps[i].below, minrange[i].below).below;
-                FloatVal::from_sqrt(inner).below
-            }
-        })
-        .collect();
+    // this will become at least: 2.0 * sqrt(minrange * p_i).
+    let raw_b: Vec<_> = (0..raw_a.len()).map(|_| 0.0).collect();
 
     // `raw_c` is the compensation for `offset`. From the constraints `s_i >= ival` we subsequently
     // update these whenever we update any of the variables in that sum. In the general case:
@@ -225,7 +219,7 @@ pub(crate) fn apply_for_expanded(
     //
     // where `c` captures the constants moved to the right side. Initially, we have the offset
     // `-sqrt(ival)²` from the substitution initializing `offset` below.
-    let raw_c: Vec<_> = minrange.iter().map(|ival| ival.below).collect();
+    let raw_c: Vec<_> = minrange.iter().map(|_| 0.0).collect();
 
     for c in &raw_c {
         assert!(
@@ -236,7 +230,10 @@ pub(crate) fn apply_for_expanded(
 
     // From now on we need sqrt(p_i) for the gradient direction and other coefficients. We no
     // longer need the original `p_i` for much so let's reuse that allocation.
-    let mut sqrtp: Vec<_> = ps.into_iter().map(Interval::new).collect();
+    let sqrtp: Vec<_> = ps.into_iter().map(Interval::new).collect();
+
+    // Track each variable's offset, i.e. sum up the steps we take while it is active.
+    let mut offset: Vec<_> = minrange.iter().map(|_| 0.0).collect();
 
     assert!(
         {
@@ -264,16 +261,6 @@ pub(crate) fn apply_for_expanded(
         "Self-solution would not add to > 1.0"
     );
 
-    // Recall we offset each `s_i` by its minimum value `sqrt(minrange_i)`. Use that to initialize
-    // all the offsets which we later need to restore the actual value. Well; we don't *need* the
-    // value itself if we keep track of the optimization value but this allows us to return the
-    // argmax to the problem if asked (debugging) without large costs.
-    let mut offset: Vec<_> = minrange.iter().map(|ival| ival.above).collect();
-
-    offset
-        .iter_mut()
-        .for_each(|o| *o = FloatVal::from_sqrt(*o).above);
-
     let mut pre = PrefixLookup {
         active: core::iter::repeat_n(true, qs.len()).collect(),
         a: raw_a,
@@ -288,7 +275,7 @@ pub(crate) fn apply_for_expanded(
 
     while !pre.is_empty() {
         let mut lambda = f64::INFINITY;
-        let mut best = (0, 0);
+        let mut best = (0, 0, [0.0, 0.0, 0.0]);
 
         assert_eq!(pre.active.len(), sqrtp.len());
         assert_eq!(pre.a.len(), sqrtp.len());
@@ -310,7 +297,7 @@ pub(crate) fn apply_for_expanded(
 
             if a_max < lambda {
                 lambda = a_max;
-                best = (j, k);
+                best = (j, k, [a, b, prec]);
             }
         }
 
@@ -321,7 +308,7 @@ pub(crate) fn apply_for_expanded(
 
         assert!(lambda >= 0.0);
         // Remove (j..k) from the problem and update the prefix sums.
-        let (j, k) = best;
+        let (j, k, _debug_setup) = best;
 
         // Note that we should be careful here, we want to remove variables from the problem but
         // the constraint system should stay defined as is. Rather, the constraint system is
@@ -351,11 +338,11 @@ pub(crate) fn apply_for_expanded(
 
         // Count contribution from open variables.
         for idx in j..=k {
-            let p_i = &mut sqrtp[idx];
+            let p_i = &sqrtp[idx];
             let o = &mut offset[idx];
 
             if pre.active[idx] {
-                let coeff_i = core::mem::take(p_i);
+                let coeff_i = p_i;
                 let r_i = *o;
 
                 // These are just debugging..
@@ -376,7 +363,8 @@ pub(crate) fn apply_for_expanded(
         eprintln!(
             "Step length: {lambda}/{:?}, value: {value} / {total_p}×{total_interval}",
             j..=k
-        );*/
+        );
+        */
 
         pre.remove(j, k, &offset);
 
@@ -394,7 +382,7 @@ pub(crate) fn apply_for_expanded(
 
             assert!(
                 ival.above >= cval,
-                "Constraints do not underestimate constraint {}/{:?}",
+                "Constraints do not underestimate variables {}/{:?}\n{_debug_setup:?}",
                 cval,
                 ival,
             );
@@ -414,10 +402,13 @@ pub(crate) fn apply_for_expanded(
 
             assert!(
                 FloatVal::sum_above([uppers[k], -lowers_pre_j[j]]) <= ival.above,
-                "Variables do not overfill whole constraint: !({} <= {}) (constraint: {})",
+                "Variables do not overfill whole constraint: !({} <= {}) (constraint: {})\n{_debug_setup:?}\nvar: {:?}\nc: {:?}\nps{:?}",
                 FloatVal::sum_above([uppers[k], -lowers_pre_j[j]]),
                 ival.above,
                 cval,
+                &offset[j..=k],
+                &pre.c[j..=k],
+                &sqrtp[j..=k],
             );
         }
     }
@@ -426,11 +417,11 @@ pub(crate) fn apply_for_expanded(
     // This, problematically, would leave some data unaccounted for. We must instead overestimate
     // the contribution from those variables individually.
     for idx in 0..pre.a.len() {
-        let p_i = &mut sqrtp[idx];
+        let p_i = &sqrtp[idx];
         let o = &mut offset[idx];
 
         if pre.active[idx] {
-            let coeff_i = core::mem::take(p_i);
+            let coeff_i = p_i;
 
             // Fallback: make these variables take up their whole range. In this manner they might
             // violate some combined constraint but that's the error side we allow.
@@ -465,15 +456,33 @@ pub(crate) fn apply_for_expanded(
         );
     }
 
-    assert!(
-        !cdf_in_edf || value >= 1.0,
-        "An empirical distribution covering the CDF must allow for a perfectly matching solution"
-    );
+    if cdf_in_edf && !(value >= 1.0) {
+        // This branch will error. So give detailed info.
+        for idx in 0..sqrtp.len() {
+            eprintln!(
+                "{}/{:?} -> {}",
+                (sqrtp[idx].sqrt.above <= offset[idx]),
+                sqrtp[idx],
+                offset[idx]
+            );
+        }
+
+        let mut sum = FloatVal::from_exact(0.0);
+        for idx in 0..sqrtp.len() {
+            sum = sum + FloatVal::from_mul(offset[idx], sqrtp[idx].sqrt.above).above;
+        }
+
+        panic!(
+            "An empirical distribution covering the CDF must allow for a perfectly matching solution but: {}/{:?}",
+            value, sum
+        );
+    }
 
     // Note: we have covered _at most_ the whole interval. There may be missing spots since we
     // never assign any value to intervals with `p_i = 0` (those do not contribute to the value but
     // make the solution ill-defined).
     // eprintln!("Value at optimum: {value} / {total_p}×{total_interval}");
+    // eprintln!("CDF match: {cdf_in_edf}");
 
     ConstraintEstimator {
         estimate: super::Estimate::from_bhattarachya_coefficient(value),
@@ -581,7 +590,15 @@ impl PrefixLookup {
         assert_eq!(self.b.len(), sq.len());
         assert_eq!(self.c.len(), sq.len());
 
-        for ((c, sq_i), &b) in self.c.iter_mut().zip(sq.iter()).zip(&self.b) {
+        for idx in 0..sq.len() {
+            if !self.active[idx] {
+                continue;
+            }
+
+            let c = &mut self.c[idx];
+            let b = self.b[idx];
+            let sq_i = &sq[idx];
+
             let lambda = FloatVal::from_exact(lambda);
             let sq_i_len = FloatVal::from_mul(sq_i.sqrt.below, sq_i.sqrt.below).below;
 
@@ -595,7 +612,14 @@ impl PrefixLookup {
             );
         }
 
-        for (b, sq_i) in self.b.iter_mut().zip(sq.iter()) {
+        for idx in 0..sq.len() {
+            if !self.active[idx] {
+                continue;
+            }
+
+            let b = &mut self.b[idx];
+            let sq_i = &sq[idx];
+
             let lambda = FloatVal::from_exact(lambda);
             let sq_i_len = FloatVal::from_mul(sq_i.sqrt.below, sq_i.sqrt.below).below;
 
@@ -608,14 +632,13 @@ impl PrefixLookup {
         }
     }
 
-    fn remove(&mut self, j: usize, k: usize, offset: &[f64]) {
+    fn remove(&mut self, j: usize, k: usize, vars: &[f64]) {
         self.a[j..=k].fill(0.0);
         self.b[j..=k].fill(0.0);
         self.active[j..=k].fill(false);
 
-        for (c, &o) in self.c[j..=k].iter_mut().zip(&offset[j..=k]) {
-            *c = (*c).min(FloatVal::from_mul(o, o).below);
-            assert!(!(*c < 0.0), "Negative c coefficient after removal",);
+        for (c, &var) in self.c[j..=k].iter_mut().zip(vars) {
+            *c = (*c).min(FloatVal::from_mul(var, var).below);
         }
     }
 
@@ -629,13 +652,15 @@ impl PrefixLookup {
         (0..n).flat_map(move |j| {
             (j..n)
                 .scan(([0.0; 3], false), move |(acc, any_active), k| {
-                    let a = self.a[k];
-                    let b = self.b[k];
+                    let is_active = self.active[k];
+
+                    let a = if is_active { self.a[k] } else { 0.0 };
+                    let b = if is_active { self.b[k] } else { 0.0 };
                     let c = self.c[k];
 
                     assert!(a >= 0.0);
                     assert!(acc[0] + a >= 0.0);
-                    *any_active |= self.active[k];
+                    *any_active |= is_active;
 
                     // Accumulate all coefficients. (Fun fact: ML generated auto-complete had
                     // originally messed this up and just never stored the accumulator back).

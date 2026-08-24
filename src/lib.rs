@@ -54,6 +54,11 @@ impl ConfidenceLevel {
         }
     }
 
+    pub fn confidence_radius(&self, len: usize) -> f64 {
+        let sqrt_n = (len as f64).sqrt();
+        self.dkw_constant / sqrt_n
+    }
+
     pub fn apply(&self, sorted: &[f64], cdf: &dyn ContinuousCDF<f64, f64>) -> Estimate {
         assert!(!sorted.is_empty(), "No estimate for empty sample");
 
