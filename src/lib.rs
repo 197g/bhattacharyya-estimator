@@ -26,6 +26,10 @@ impl ConfidenceLevel {
         dkw_constant: 1.6276236307187293,
     };
 
+    /// Construct a new confidence level by its allowed Type I error probability.
+    ///
+    /// The probability must be strictly within `(0, 1)`. The associated constant `NONE` provides a
+    /// biased estimator with 100% allowed error probability instead.
     pub fn new(level: f64) -> Self {
         assert!(level > 0.0);
         assert!(level < 1.0);
@@ -203,6 +207,27 @@ impl Estimate {
 
 /// Represents the hypothesis that the Hellinger distance between an sampled distribution and an
 /// analytical distribution is strictly less than an expected value.
+///
+/// Find an interval eps such that `max(P) BC(P, Q) {<P, E> <= eps} <= bc_bound` where E is the
+/// empirical distribution and <,> is the absolute norm / total variance. That bound is a lower
+/// bound, it will also hold for all smaller values. Note that the condition is incompatible with
+/// our hypothesis which is of the form `BC(P, Q) > bc_bound = 1 - h²`.
+///
+/// So, assuming that the hypothesis is true implies the true total variance ŧ between sample and
+/// its underlying distribution to be greater than `ε`. The probability of this is bounded from
+/// above by the Dvoretzky-Kiefer-Wolfowitz bound (2 * exp(-2N * ε**2)). We construct the random
+/// variable `2 * N * ε` for the sample. Then the contribution to the expected value of that can be
+/// bounded by `4 * N * ŧ * exp(-2N * ŧ**2)` which we recognize as the density of a Weibull
+/// distribution (λ = 1 / sqrt(2 * N), k = 2)—so the mean is `1`.
+///
+/// From the law of total expectation this construction is an E-value.
+///
+/// ```
+/// E[2nε] = E[E[2nε|tvd=ŧ]] <= E[E[1]] = 1
+/// ```
+///
+/// As E-value we just return the random value. This has expected value bounded by `1` as
+/// just demonstrated so it is a valid E-value for the hypothesis.
 pub struct MaximumHellingerHypothesis {
     expected: f64,
 }
@@ -237,20 +262,6 @@ impl MaximumHellingerHypothesis {
         // Quantiles according to model CDF.
         let qs: Vec<_> = sorted.chunks(skip).map(|arr| cdf.cdf(arr[0])).collect();
 
-        // Find an interval eps such that `max(P) BC(P, Q) {<P, E> <= eps} <= bc_bound` where E is
-        // the empirical distribution and <,> is the absolute norm / total variance. That bound is
-        // a lower bound, it will also hold for all smaller values. Note that the condition is
-        // incompatible with our hypothesis which is of the form `BC(P, Q) > bc_bound = 1 - h²`.
-        //
-        // So, assuming that the hypothesis is true implies the true total variance ŧ between sample
-        // and its underlying distribution to be great than `eps`. The probability of this is
-        // bounded from above by the Dvoretzky-Kiefer-Wolfowitz bound (2 * exp(-2N * eps**2)). We
-        // construct the random variable `2 * N * eps` for the sample. Then the contribution to the
-        // expected value of that can be bounded by `4 * N * ŧ * exp(-2N * ŧ**2)` which is the
-        // density of a Weibull distribution (λ = 1 / sqrt(2 * N), k = 2).
-        //
-        // As E-value we just return the random value. This has expected value bounded by `1` as
-        // just demonstrated so it is a valid E-value for the hypothesis.
         let (mut min, mut max) = (0.0, 1.0);
 
         // FIXME: bisection search is a very crude method here. The task of
@@ -275,15 +286,16 @@ impl MaximumHellingerHypothesis {
         }
     }
 
-    pub fn e_value_by_constraint(&self, sorted: &[f64], cdf: &dyn ContinuousCDF<f64, f64>) -> Evalue {
+    pub fn e_value_by_constraint(
+        &self,
+        sorted: &[f64],
+        cdf: &dyn ContinuousCDF<f64, f64>,
+    ) -> Evalue {
         let bc_bound = 1.0 - self.expected.powi(2);
         let count = sorted.len() as f64;
 
         let (mut min, mut max) = (0.0, 1.0);
 
-        // FIXME: it'd be nice to use this but the numerical problem of underestimation is really
-        // bad here. We get no guarantee about how badly we will underestimate the true TVD here
-        // and that means the whole expected value is bogus.
         for _ in 0..64 {
             let expand = f64::midpoint(min, max);
             let constraints = constraint::apply_for_expanded(expand, sorted, cdf);

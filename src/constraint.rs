@@ -94,7 +94,7 @@ pub fn apply(
 ) -> ConstraintEstimator {
     let count = sorted.len() as f64;
     let sqrt_n = count.sqrt();
-    let expand = level.dkw_constant / sqrt_n;
+    let expand = FloatVal::from_div(level.dkw_constant, sqrt_n).above;
     apply_for_expanded(expand, sorted, cdf)
 }
 
@@ -103,13 +103,14 @@ pub(crate) fn apply_for_expanded(
     sorted: &[f64],
     cdf: &dyn super::ContinuousCDF<f64, f64>,
 ) -> ConstraintEstimator {
-    // FIXME: goes out of sync when we remove intervals of variables. We must make a copy.
     fn upper_at(qs: &[f64], i: usize, expand: f64) -> f64 {
-        (qs[i] + expand).min(1.0)
+        FloatVal::sum_above([qs[i], expand]).min(1.0)
     }
 
     fn lower_at(qs: &[f64], i: usize, expand: f64) -> f64 {
-        (qs[i] - expand).max(0.0f64)
+        FloatVal::from_add_with_magnitude(qs[i], -expand, qs[i] > expand)
+            .below
+            .max(0.0f64)
     }
 
     let count = sorted.len() as f64;
@@ -123,15 +124,19 @@ pub(crate) fn apply_for_expanded(
         .step_by(vstep)
         .map(|n| (1. + n as f64) / count)
         .collect();
-    qs.push(1.0);
 
     // Square roots of `p_i` but convenient to initialize it with `p_i` itself.
-    let mut ps: Vec<_> = sorted.chunks(vstep).map(|arr| cdf.cdf(arr[0])).collect();
-    ps.push(1.0);
-    super::Estimate::diff_in_place_with_added_bias(&mut ps, 0.0);
+    let mut ps: Vec<_> = sorted
+        .chunks(vstep)
+        .map(|arr| FloatVal::from_exact(cdf.cdf(arr[0])))
+        .collect();
+
+    ps.push(FloatVal::from_exact(1.0));
+    FloatVal::diff_cdf_in_place(&mut ps);
+
     ps.iter_mut().for_each(|p_i| {
         assert!(
-            *p_i >= 0.0,
+            p_i.below >= 0.0 && p_i.above >= 0.0,
             "Quantiles must be non-decreasing, something is wrong"
         );
     });
@@ -139,14 +144,21 @@ pub(crate) fn apply_for_expanded(
     let mut lowers = (0..qs.len())
         .map(|n| lower_at(&qs, n, expand))
         .collect::<Vec<_>>();
-    let uppers = (0..qs.len())
+    lowers.push(1.0);
+
+    let mut uppers = (0..qs.len())
         .map(|n| upper_at(&qs, n, expand))
         .collect::<Vec<_>>();
+    uppers.push(1.0);
+
+    // After expansion, fix this up. I.e. we have a slack variable at the end for anything after the
+    // last sample and this must capture all remaining distribution.
+    qs.push(1.0);
 
     let minrange = (0..qs.len())
         .map(|n| {
             if n == 0 {
-                0.0
+                FloatVal::from_exact(lowers[0])
             } else {
                 // Make sure we only relax this constraint `p_i >= lower[i] - upper[i - 1]` for all
                 // intervals and their associated variable..
@@ -166,13 +178,16 @@ pub(crate) fn apply_for_expanded(
                 // evaluation instead (e.g. `c.max(0.0)` in prefix_sum_iterator) and other places.
                 // Note that we already do `FloatVal::sum_above` to setup the solver itself that
                 // deals with the same basic issue over inverted interval bounds.
-                FloatVal::from_add_with_magnitude(
+                let v = FloatVal::from_add_with_magnitude(
                     lowers[n].max(uppers[n - 1]),
                     -uppers[n - 1],
                     false,
-                )
-                .above
-                .max(0.0)
+                );
+
+                FloatVal {
+                    above: v.above.max(0.0),
+                    below: v.below.max(0.0),
+                }
             }
         })
         .collect::<Vec<_>>();
@@ -185,11 +200,26 @@ pub(crate) fn apply_for_expanded(
     };
 
     // First component of the constraint has `s_i²` which the step expands to `l²·sqrt(p_i)²`.
-    let raw_a = ps.clone();
+    // Here we need an underestimation to initialize the constraint system.
+    let raw_a: Vec<_> = ps.iter().map(|ival| ival.below).collect();
+
     let raw_b: Vec<_> = (0..raw_a.len())
-        .map(|i| 2.0 * f64::sqrt(ps[i] * minrange[i]))
+        .map(|i| {
+            2.0 * {
+                let inner = FloatVal::from_mul(ps[i].below, minrange[i].below).below;
+                FloatVal::from_sqrt(inner).below
+            }
+        })
         .collect();
-    let raw_c: Vec<_> = minrange;
+
+    // `raw_c` is the compensation for `offset`. From the constraints `s_i >= ival` we subsequently
+    // update these whenever we update any of the variables in that sum. In the general case:
+    //
+    // `a·s_i² + b·s_i >= ival - c`
+    //
+    // where `c` captures the constants moved to the right side. Initially, we have the offset
+    // `-sqrt(ival)²` from the substitution initializing `offset` below.
+    let raw_c: Vec<_> = minrange.iter().map(|ival| ival.below).collect();
 
     for c in &raw_c {
         assert!(
@@ -202,17 +232,44 @@ pub(crate) fn apply_for_expanded(
     // longer need the original `p_i` for much so let's reuse that allocation.
     let mut sqrtp: Vec<_> = ps.into_iter().map(Interval::new).collect();
 
+    assert!(
+        {
+            let mut sum = FloatVal::from_exact(0.0);
+
+            for i in 0..sqrtp.len() {
+                sum = sum + FloatVal::sum_above([uppers[i], -lowers_pre_j[i]]);
+            }
+
+            sum.above >= 1.0
+        },
+        "Constraint-solution would not add to > 1.0"
+    );
+
+    assert!(
+        {
+            let mut sum = FloatVal::from_exact(0.0);
+
+            for ival in &sqrtp {
+                sum = sum + FloatVal::from_mul(ival.sqrt, ival.sqrt).above;
+            }
+
+            sum.above >= 1.0
+        },
+        "Self-solution would not add to > 1.0"
+    );
+
     // Recall we offset each `s_i` by its minimum value `sqrt(minrange_i)`. Use that to initialize
     // all the offsets which we later need to restore the actual value. Well; we don't *need* the
     // value itself if we keep track of the optimization value but this allows us to return the
     // argmax to the problem if asked (debugging) without large costs.
-    let mut offset: Vec<_> = raw_c.clone();
+    let mut offset: Vec<_> = minrange.iter().map(|ival| ival.above).collect();
+
     offset
         .iter_mut()
         .for_each(|o| *o = FloatVal::from_sqrt(*o).above);
 
     let mut pre = PrefixLookup {
-        active: (0..qs.len()).collect(),
+        active: core::iter::repeat_n(true, qs.len()).collect(),
         a: raw_a,
         b: raw_b,
         c: raw_c,
@@ -227,18 +284,14 @@ pub(crate) fn apply_for_expanded(
         let mut lambda = f64::INFINITY;
         let mut best = (0, 0);
 
-        assert!(pre.active.len() <= sqrtp.len());
+        assert_eq!(pre.active.len(), sqrtp.len());
         assert_eq!(pre.a.len(), sqrtp.len());
         assert_eq!(pre.b.len(), sqrtp.len());
         assert_eq!(pre.c.len(), sqrtp.len());
         assert_eq!(offset.len(), sqrtp.len());
 
         for (j, k, [a, b, prec]) in pre.prefix_sum_iterator() {
-            if a == 0.0 {
-                continue;
-            }
-
-            let ival = uppers[k] - lowers_pre_j[j];
+            let ival = FloatVal::sum_above([uppers[k], -lowers_pre_j[j]]);
             let c = FloatVal::sum_above([ival, -prec]);
 
             assert!(
@@ -248,6 +301,8 @@ pub(crate) fn apply_for_expanded(
 
             let a_max = solve(a, b, c);
 
+            assert!(a_max >= 0.0);
+
             if a_max < lambda {
                 lambda = a_max;
                 best = (j, k);
@@ -255,6 +310,7 @@ pub(crate) fn apply_for_expanded(
         }
 
         if !lambda.is_finite() {
+            assert!(lambda > 0.0);
             break;
         }
 
@@ -286,17 +342,9 @@ pub(crate) fn apply_for_expanded(
         // in the end, consequently this must error on the side of stepping further than `adjust`.
         for (p_i, o) in sqrtp.iter().zip(offset.iter_mut()) {
             // Only open variables.
-            if p_i.len > 0.0 {
-                let step = FloatVal::from_mul(lambda, p_i.sqrt.above);
+            if p_i.len.above > 0.0 {
+                let step = FloatVal::from_mul(lambda, p_i.sqrt);
                 *o = FloatVal::from_add(*o, step.above).above;
-                /* Mathematically, yes. Numerically, no. And we don't care about exceeding the
-                * maximum bound directly as that makes the function value appear larger as long as
-                * it does not cause other steps to be smaller than possible.
-                  assert!(
-                *o * *o <= uppers[idx] - lowers_jplus_one[idx],
-                "{o} >= {} at index {idx}, something is wrong",
-                uppers[idx] - lowers_jplus_one[idx]
-                ); */
             }
         }
 
@@ -305,30 +353,80 @@ pub(crate) fn apply_for_expanded(
             let p_i = &mut sqrtp[idx];
             let o = &mut offset[idx];
 
-            if !(p_i.len == 0.0) {
+            if pre.active[idx] {
                 let coeff_i = core::mem::take(p_i);
-
                 let r_i = *o;
-                let maximum = uppers[idx] - lowers_pre_j[idx];
-                let r_i = f64::sqrt(maximum).min(r_i);
-                *o = r_i;
 
                 // These are just debugging..
                 total_interval = r_i.mul_add(r_i, total_interval);
-                total_p += coeff_i.len;
+                total_p = FloatVal::from_add(total_p, coeff_i.len.above).above;
 
                 // Value gives us the final result, we also must overestimate it.
                 // FIXME: evaluate if recording all contributions separately with only a final
                 // exact-sum step is actually more beneficial.
                 value = {
-                    let contribution = FloatVal::from_mul(coeff_i.sqrt.above, r_i).above;
+                    let contribution = FloatVal::from_mul(coeff_i.sqrt, r_i).above;
                     FloatVal::from_add(contribution, value).above
                 };
             }
         }
 
         pre.remove(j, k, &offset);
+
+        if cfg!(debug_assertions) {
+            let mut ival = FloatVal::from_exact(0.0);
+
+            for &o in &offset[j..=k] {
+                ival = ival + FloatVal::from_mul(o, o).above;
+            }
+
+            assert!(FloatVal::sum_above([uppers[k], -lowers_pre_j[j]]) <= ival.above);
+        }
     }
+
+    // We may have intervals so small that the simultaneous step length by solving is infinite.
+    // This, problematically, would leave some data unaccounted for. We must instead overestimate
+    // the contribution from those variables individually.
+    if !pre.is_empty() {
+        for idx in 0..pre.a.len() {
+            let p_i = &mut sqrtp[idx];
+            let o = &mut offset[idx];
+
+            if pre.active[idx] {
+                let coeff_i = core::mem::take(p_i);
+
+                // Just make these variables take up their whole range.
+                let ival = FloatVal::sum_above([uppers[idx], -lowers_pre_j[idx]]);
+                let r_i = (*o).max(FloatVal::from_sqrt(ival).above);
+                *o = r_i;
+
+                // These are just debugging..
+                total_interval = r_i.mul_add(r_i, total_interval);
+                total_p = FloatVal::from_add(total_p, coeff_i.len.above).above;
+
+                // Value gives us the final result, we also must overestimate it.
+                value = {
+                    let contribution = FloatVal::from_mul(coeff_i.sqrt, r_i).above;
+                    FloatVal::from_add(contribution, value).above
+                };
+            }
+        }
+    }
+
+    assert!(total_p >= 1.0, "All data accounted for");
+
+    assert!(
+        {
+            let mut sum = FloatVal::from_exact(0.0);
+
+            for &r_i in &offset {
+                sum = sum + FloatVal::from_mul(r_i, r_i).above;
+            }
+
+            sum.above >= 1.0
+        },
+        "Self-solution of distribution would not add to >= 1.0"
+    );
 
     // Note: we have covered _at most_ the whole interval. There may be missing spots since we
     // never assign any value to intervals with `p_i = 0` (those do not contribute to the value but
@@ -367,6 +465,10 @@ fn solve(a: f64, b: f64, c: f64) -> f64 {
     let ba = FloatVal::from_div(b, a);
     let ca = FloatVal::from_div(c, a).above;
 
+    if !ba.above.is_finite() || !ca.is_finite() {
+        // Discard the quadratic term `a`, approximately.
+        return FloatVal::from_div(c, b).above;
+    }
     // Note: c was the negative of the usual constant term
     let d = (FloatVal::from_mul(ba.above, ba.above) + 4.0 * ca).above;
 
@@ -380,29 +482,35 @@ fn solve(a: f64, b: f64, c: f64) -> f64 {
         "Negative solution in quadratic equation {a}x²-{c}"
     );
 
-    let dsq = FloatVal::from_sqrt(d).above;
+    // `ba.above**2` might overflow floating point range.
+    let dsq = if d.is_finite() {
+        FloatVal::from_sqrt(d).above
+    } else {
+        // Approximate this square root by `ba.above + sqrt(4.0 * ca)` instead.
+        FloatVal::sum_above([ba.above, 2.0 * FloatVal::from_sqrt(ca).above])
+    };
+
     // FIXME: subnormals might actually round this wrong? Unsure.
     FloatVal::sum_above([dsq, -ba.below]) / 2.0
 }
 
 #[derive(Default, Debug)]
 struct Interval {
-    len: f64,
-    sqrt: FloatVal,
+    len: FloatVal,
+    sqrt: f64,
 }
 
 impl Interval {
-    fn new(v: f64) -> Self {
+    fn new(v: FloatVal) -> Self {
         Interval {
             len: v,
-            sqrt: FloatVal::from_sqrt(v),
+            sqrt: FloatVal::from_sqrt(v.above).above,
         }
     }
 }
 
 struct PrefixLookup {
-    /// Ordered list of active variable indices.
-    active: Vec<usize>,
+    active: Vec<bool>,
     a: Vec<f64>,
     b: Vec<f64>,
     c: Vec<f64>,
@@ -410,25 +518,29 @@ struct PrefixLookup {
 
 impl PrefixLookup {
     fn is_empty(&self) -> bool {
-        self.active.is_empty()
+        !self.active.iter().copied().any(|x| x)
     }
 
     /// Adjust the constraint system with a known step.
     ///
-    /// Note we must only ever *relax* the constraints. That is, `c` is allowed to get larger than
-    /// its real value, and `b` more negative (but we store its positive value instead).
+    /// Note we must only ever *relax* the constraints. That is, the right side is only allowed to
+    /// get larger than its real value, and `b` smaller. `c` is the right side compensation
+    /// subtracting the constant terms accumulated from substitutions and hence we also error on the
+    /// lower side.
     fn adjust(&mut self, sq: &[Interval], lambda: f64) {
         // Redefine s'_i = s_i - lambda * sq_i. This is the substitution of variables after taking a
         // step in the direction of the gradient. (Recall: a_i² = sq_i.len)
         let c_step = FloatVal::from_mul(lambda, lambda);
-        let lambda = FloatVal::from_exact(lambda);
 
         assert_eq!(self.a.len(), sq.len());
         assert_eq!(self.b.len(), sq.len());
         assert_eq!(self.c.len(), sq.len());
         for ((c, sq_i), &b) in self.c.iter_mut().zip(sq.iter()).zip(&self.b) {
+            let lambda = FloatVal::from_exact(lambda);
             // Note: b here is already biased with the direction of the step sqrt(p_i).
-            *c = FloatVal::sum_above([*c, (lambda * b).above, -(c_step * sq_i.len).below]);
+            let constants = FloatVal::from_add((lambda * b).below, (c_step * sq_i.len.below).below);
+            *c = FloatVal::from_add(*c, constants.below).below;
+
             assert!(
                 !(*c < 0.0),
                 "Negative c coefficient after adjustment {lambda:?}·{sq_i:?}, something is wrong"
@@ -436,7 +548,7 @@ impl PrefixLookup {
         }
 
         for (b, sq_i) in self.b.iter_mut().zip(sq.iter()) {
-            *b = FloatVal::from_add(*b, 2.0 * (lambda * sq_i.len).below).below;
+            *b = FloatVal::from_add(*b, 2.0 * (sq_i.len * lambda).below).below;
             assert!(
                 *b >= 0.0,
                 "Negative b coefficient after adjustment {lambda:?}·{sq_i:?}, something is wrong"
@@ -447,9 +559,10 @@ impl PrefixLookup {
     fn remove(&mut self, j: usize, k: usize, offset: &[f64]) {
         self.a[j..=k].fill(0.0);
         self.b[j..=k].fill(0.0);
+        self.active[j..=k].fill(false);
 
         for (c, &o) in self.c[j..=k].iter_mut().zip(&offset[j..=k]) {
-            *c = FloatVal::from_mul(o, o).above;
+            *c = (*c).min(FloatVal::from_mul(o, o).below);
             assert!(!(*c < 0.0), "Negative c coefficient after removal",);
         }
     }
@@ -462,22 +575,29 @@ impl PrefixLookup {
         // 1..=3 may have different constraint effects). Optimizing this means discarding
         // intervals more efficiently than a simple test.
         (0..n).flat_map(move |j| {
-            (j..n).scan([0.0; 3], move |acc, k| {
+            (j..n).scan(([0.0; 3], false), move |(acc, any_active), k| {
                 let a = self.a[k];
                 let b = self.b[k];
                 let c = self.c[k];
+
                 assert!(a >= 0.0);
                 assert!(acc[0] + a >= 0.0);
+                *any_active |= self.active[k];
 
                 // Accumulate all coefficients. (Fun fact: ML generated auto-complete had
                 // originally messed this up and just never stored the accumulator back).
                 *acc = [
                     FloatVal::from_add(acc[0], a).below,
                     FloatVal::from_add(acc[1], b).below,
-                    FloatVal::from_add(acc[2], c).above,
+                    FloatVal::from_add(acc[2], c).below,
                 ];
 
-                Some((j, k, *acc))
+                Some((j, k, (*acc, *any_active)))
+            })
+            .filter_map(|(j, k, (acc, any_active))| if any_active {
+                Some((j, k, acc))
+            } else {
+                None
             })
         })
     }
@@ -499,6 +619,21 @@ impl FloatVal {
                 FloatVal::from_add_with_magnitude(c, v, c.abs() > v.abs()).above
             })
             .max(0.0)
+    }
+
+    pub fn diff_cdf_in_place(slice: &mut [Self]) {
+        let mut state = FloatVal::from_exact(0.0);
+        slice.iter_mut().for_each(|x| {
+            let pre = core::mem::replace(&mut state, *x);
+            assert!(pre.above <= x.above, "Monotonicity of CDF");
+            assert!(pre.below <= x.below, "Monotonicity of CDF");
+
+            *x = FloatVal {
+                above: FloatVal::from_add_with_magnitude(x.above, -pre.below, true).above,
+                below: FloatVal::from_add_with_magnitude(x.below, -pre.above, x.below > pre.above)
+                    .below,
+            };
+        })
     }
 
     pub fn from_exact(f: f64) -> Self {
