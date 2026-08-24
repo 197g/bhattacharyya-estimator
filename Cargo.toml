@@ -25,6 +25,10 @@ statrs = ["dep:statrs"]
 rand = "0.10"
 statrs = { version = "*", default-features = false, features = ["rand"] }
 
+[profile.test-performant]
+inherits = "release"
+debug-assertions = true
+
 [[test]]
 name = "distribution-std"
 path = "tests/distribution-std.rs"
