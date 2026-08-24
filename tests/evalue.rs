@@ -1,4 +1,4 @@
-use estimated_hellinger::MaximumHellingerHypothesis;
+use hellinger_estimates::MaximumHellingerHypothesis;
 
 use statrs::distribution::{ContinuousCDF, Normal};
 
@@ -34,7 +34,7 @@ fn test_evalue() {
 
 #[rustfmt::skip] // No unnecessary line breaks.. Ugh. Might write our own Display for this.
 fn check_ecdf<const N: usize>(v: &[[f64; N]], n: &dyn ContinuousCDF<f64, f64>, actual_bc: f64) {
-    fn verify(actual: f64, hypoth: f64, evalue: estimated_hellinger::Evalue) -> &'static str {
+    fn verify(actual: f64, hypoth: f64, evalue: hellinger_estimates::Evalue) -> &'static str {
         // E-Value requires that the expectation <= 1.0 in the world where hypothesis holds.
         // So under-reporting is simply a failure to reject, over reporting a problem with the
         // E-value. Of course, the setup below only does a single sample and not in fact a real
@@ -57,7 +57,7 @@ fn check_ecdf<const N: usize>(v: &[[f64; N]], n: &dyn ContinuousCDF<f64, f64>, a
     }
 
     let evalue_expectation = |hypo: MaximumHellingerHypothesis| {
-        let mut acc = estimated_hellinger::Evalue { value: 0.0 };
+        let mut acc = hellinger_estimates::Evalue { value: 0.0 };
 
         for samples in v {
             acc.value +=  hypo.e_value(samples, n).value;

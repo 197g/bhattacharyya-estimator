@@ -85,13 +85,18 @@ pub struct ConstraintEstimator {
 /// equation in the step length `l`. Let us assume `s_i = 0` for all `i` at the start of the iteration.
 /// Then the constraint is:
 ///
-///     sum(l² · p_i + l · 2sqrt(p_i · minrange_i), i=j..=k)
-///         <= maxrange{j,k} - sum(minrange_i, i=j..=k)
+/// ```text
+/// sum(l² · p_i + l · 2sqrt(p_i · minrange_i), i=j..=k)
+///     <= maxrange{j,k} - sum(minrange_i, i=j..=k)
+/// ```
 ///
 /// Which is a quadratic equation in `l` with coefficients:
-///     a = sum(p_i, i=j..=k)
-///     b = sum(2sqrt(p_i · minrange_i), i=j..=k)
-///     c = maxrange{j,k} - sum(minrange_i, i=j..=k)
+///
+/// ```text
+/// a = sum(p_i, i=j..=k)
+/// b = sum(2sqrt(p_i · minrange_i), i=j..=k)
+/// c = maxrange{j,k} - sum(minrange_i, i=j..=k)
+/// ```
 ///
 /// Simple prefix sum problem if we want random access to the equations of each `j, k`. After
 /// taking a step in the direction we can apply another substitution of variables (removing all
@@ -508,7 +513,7 @@ fn solve(a: f64, b: f64, c: f64) -> f64 {
 
     if a == 0.0 {
         if b <= 0.0 {
-            debug_assert!(false);
+            debug_assert!(b >= 0.0);
             return f64::INFINITY;
         }
 

@@ -227,7 +227,7 @@ impl Estimate {
 ///
 /// From the law of total expectation this construction is an E-value.
 ///
-/// ```
+/// ```text
 /// E[2nε] = E[E[2nε|tvd=ŧ]] <= E[E[1]] = 1
 /// ```
 ///
