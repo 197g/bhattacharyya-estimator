@@ -150,8 +150,29 @@ pub(crate) fn apply_for_expanded(
             } else {
                 // Make sure we only relax this constraint `p_i >= lower[i] - upper[i - 1]` for all
                 // intervals and their associated variable..
-                FloatVal::from_add_with_magnitude(lowers[n], -(uppers[n - 1].max(lowers[n])), false)
-                    .below
+                //
+                // FIXME: If you have dense enough sampling this inversion is not that unlikely
+                // to occur by overlapping intervals around consecutive CDF samples. See this
+                // vertical diagram of a CDF and confidence correction particularly at the end or
+                // start of a short-tail distribution:
+                //
+                // ```
+                // n-1: |-x-|
+                // n  :   |-x-|
+                // ```
+                //
+                // Now, we only relax the constraint but we do that permanently. Instead, we could
+                // still track the current bound like normal, just relaxing it in each individual
+                // evaluation instead (e.g. `c.max(0.0)` in prefix_sum_iterator) and other places.
+                // Note that we already do `FloatVal::sum_above` to setup the solver itself that
+                // deals with the same basic issue over inverted interval bounds.
+                FloatVal::from_add_with_magnitude(
+                    lowers[n].max(uppers[n - 1]),
+                    -uppers[n - 1],
+                    false,
+                )
+                .above
+                .max(0.0)
             }
         })
         .collect::<Vec<_>>();
@@ -169,6 +190,13 @@ pub(crate) fn apply_for_expanded(
         .map(|i| 2.0 * f64::sqrt(ps[i] * minrange[i]))
         .collect();
     let raw_c: Vec<_> = minrange;
+
+    for c in &raw_c {
+        assert!(
+            *c >= 0.0,
+            "Invalid initial constraint bound, should be dropped?"
+        );
+    }
 
     // From now on we need sqrt(p_i) for the gradient direction and other coefficients. We no
     // longer need the original `p_i` for much so let's reuse that allocation.
@@ -402,7 +430,7 @@ impl PrefixLookup {
             // Note: b here is already biased with the direction of the step sqrt(p_i).
             *c = FloatVal::sum_above([*c, (lambda * b).above, -(c_step * sq_i.len).below]);
             assert!(
-                *c >= 0.0,
+                !(*c < 0.0),
                 "Negative c coefficient after adjustment {lambda:?}·{sq_i:?}, something is wrong"
             );
         }
@@ -422,6 +450,7 @@ impl PrefixLookup {
 
         for (c, &o) in self.c[j..=k].iter_mut().zip(&offset[j..=k]) {
             *c = FloatVal::from_mul(o, o).above;
+            assert!(!(*c < 0.0), "Negative c coefficient after removal",);
         }
     }
 
@@ -534,6 +563,7 @@ impl FloatVal {
         }
     }
 
+    #[track_caller]
     pub fn from_add(lhs: f64, rhs: f64) -> Self {
         assert!(!(lhs < 0.0));
         assert!(!(rhs < 0.0));
@@ -574,6 +604,7 @@ impl Default for FloatVal {
 
 impl core::ops::Mul<f64> for FloatVal {
     type Output = FloatVal;
+    #[track_caller]
     fn mul(self, v: f64) -> Self {
         assert!(!(v < 0.0), "Unimplemented non-positive range");
         FloatVal {
@@ -585,8 +616,9 @@ impl core::ops::Mul<f64> for FloatVal {
 
 impl core::ops::Add<f64> for FloatVal {
     type Output = FloatVal;
+    #[track_caller]
     fn add(self, v: f64) -> Self {
-        assert!(!(self.below < v), "Unimplemented non-positive range");
+        assert!(!(self.below < 0.0), "Unimplemented non-positive range");
         FloatVal {
             above: FloatVal::from_add(self.above, v).above,
             below: FloatVal::from_add(self.below, v).below,
