@@ -18,6 +18,11 @@ fn generate_sample() {
 
     // Against itself, we have a very very high BC. In particular the extremely high confidence
     // levels must /never/ (in a computation heat death sense) overestimate this.
+    // NOTE: however, we are also verifying the statrs implementation here! The constraint system is
+    // *highly* sensitive. If the inverse cdf implementation does not actually agree with the CDF
+    // data and our randomness is slightly off, we *may* detect a non-zero Hellinger distance. I
+    // suspect this to be the case based on experimental data where the CDF does not lie within the
+    // DKW bounds of p95 a lot of the times.
     check_ecdf(&v, &n, 1.0);
 
     for (mean, stddev) in [

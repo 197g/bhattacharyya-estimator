@@ -228,6 +228,11 @@ impl Estimate {
 ///
 /// As E-value we just return the random value. This has expected value bounded by `1` as
 /// just demonstrated so it is a valid E-value for the hypothesis.
+///
+/// FIXME: there's a neat corollary here where we can give an E-Value for a particular sample
+/// being *of* an underlying distribution, corresponding to the hypothesis that the distance is at
+/// most `0.0`, very quickly. Just calculate the maximum distance of the empirical CDF to the
+/// analytical CDF and return `2*N*ε` as above.
 pub struct MaximumHellingerHypothesis {
     expected: f64,
 }
@@ -318,4 +323,19 @@ impl MaximumHellingerHypothesis {
 #[derive(Clone, Copy, Debug)]
 pub struct Evalue {
     pub value: f64,
+}
+
+#[test]
+fn verify_dkw_associated_constants() {
+    assert!(
+        (ConfidenceLevel::new(0.05).dkw_constant - ConfidenceLevel::P95.dkw_constant).abs() < 1e-12
+    );
+
+    assert!(
+        (ConfidenceLevel::new(0.02).dkw_constant - ConfidenceLevel::P98.dkw_constant).abs() < 1e-12
+    );
+
+    assert!(
+        (ConfidenceLevel::new(0.01).dkw_constant - ConfidenceLevel::P99.dkw_constant).abs() < 1e-12
+    );
 }
