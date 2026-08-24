@@ -288,7 +288,7 @@ impl MaximumHellingerHypothesis {
             let expand = f64::midpoint(min, max);
             let constraints = constraint::apply_for_expanded(expand, sorted, cdf);
 
-            if constraints.estimate.bc_estimate * 1.001 > bc_bound {
+            if constraints.estimate.bc_estimate > bc_bound {
                 max = expand;
             } else {
                 min = expand;
@@ -303,6 +303,7 @@ impl MaximumHellingerHypothesis {
     }
 }
 
+#[derive(Clone, Copy)]
 pub struct Evalue {
     pub value: f64,
 }
