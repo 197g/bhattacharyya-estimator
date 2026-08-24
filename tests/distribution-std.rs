@@ -1,4 +1,4 @@
-use estimated_hellinger::{ConfidenceLevel, Estimate};
+use hellinger_estimates::{ConfidenceLevel, Estimate};
 
 use statrs::distribution::{ContinuousCDF, Normal, Uniform};
 

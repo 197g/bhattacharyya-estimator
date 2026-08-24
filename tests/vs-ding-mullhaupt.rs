@@ -1,7 +1,7 @@
 //! Compare with the estimator(s) from:
 //!
 //! Ding, R., & Mullhaupt, A. (2023). Empirical Squared Hellinger Distance Estimator and Generalizations to a Family of α-Divergence Estimators. Entropy, 25(4), 612. https://doi.org/10.3390/e25040612
-use estimated_hellinger::ConfidenceLevel;
+use hellinger_estimates::ConfidenceLevel;
 
 use statrs::distribution::{ContinuousCDF, Normal};
 

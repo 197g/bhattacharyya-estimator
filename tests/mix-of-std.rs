@@ -1,4 +1,4 @@
-use estimated_hellinger::{mixed, ConfidenceLevel};
+use hellinger_estimates::{mixed, ConfidenceLevel};
 
 use rand::RngExt as _;
 use statrs::distribution::{ContinuousCDF, Normal};
