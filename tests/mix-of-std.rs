@@ -1,6 +1,6 @@
 use estimated_hellinger::{mixed, ConfidenceLevel};
 
-use rand::Rng as _;
+use rand::RngExt as _;
 use statrs::distribution::{ContinuousCDF, Normal};
 
 struct Mixture2 {
@@ -14,7 +14,7 @@ fn compare_sample(a: (f64, f64), b: (f64, f64), lambda: f64) {
     mixture.lambda = lambda;
 
     let mut samples = (0..10_000_000)
-        .map(|_| rand::thread_rng().sample(&mixture))
+        .map(|_| rand::rng().sample(&mixture))
         .collect::<Vec<_>>();
 
     samples.sort_by(|a, b| a.total_cmp(b));
@@ -116,9 +116,10 @@ impl ContinuousCDF<f64, f64> for Mixture2 {
     }
 }
 
-impl rand::distributions::Distribution<f64> for Mixture2 {
+impl rand::distr::Distribution<f64> for Mixture2 {
     fn sample<R: rand::Rng + ?Sized>(&self, rng: &mut R) -> f64 {
-        if rng.gen::<f64>() < self.lambda {
+        use rand::RngExt as _;
+        if rng.random::<f64>() < self.lambda {
             rng.sample(&self.left)
         } else {
             rng.sample(&self.right)
