@@ -21,9 +21,9 @@ fn compare_figure_3a() {
     eprintln!("Comparing figure 5b");
     compare_uniform((0.0, 1.0), (0.5, 1.5));
 
-    eprintln!("Comparing figure 6a");
+    eprintln!("Comparing figure 6a = 0.183699");
     compare_cauchy_normal((0.0, 1.0), (1.0, 1.0));
-    eprintln!("Comparing figure 6b");
+    eprintln!("Comparing figure 6b = 0.108461");
     compare_cauchy_normal((0.0, 1.0), (0.0, 1.0));
 }
 
@@ -76,20 +76,26 @@ fn compare_samples(dist_p: &dyn ContinuousCDF<f64, f64>, dist_q: &dyn Continuous
             .collect();
 
         v.sort_by(|a, b| a.total_cmp(b));
-        let (ours, surely) = check_ecdf(&v, dist_q);
-        eprintln!("Sample size {sample_size}: {ours} {surely}");
+        let (cointoss, ours, surely) = check_ecdf(&v, dist_q);
+        eprintln!("Sample size {sample_size}: {cointoss} {ours} {surely}");
     }
 }
 
-fn check_ecdf(v: &[f64], n: &dyn ContinuousCDF<f64, f64>) -> (f64, f64) {
+fn check_ecdf(v: &[f64], n: &dyn ContinuousCDF<f64, f64>) -> (f64, f64, f64) {
     // The bad confidence levels, and in particular none-confidence level, will happen to
     // underestimate the true one by a tiny bit sometimes. That's expected?
     //
     // We need a better way to *grind* these tests to verify if the confidence levels hold! That is
     // determine the variance of the test itself.
+    //
+    // Weirdly enough, even the really bad confidence level does not actually fail with the
+    // constraint maximizer. What's up with that? Is that an artifact of the distributions being
+    // well-behaved, and how can we exploit it?
+    let e00_constraint = ConfidenceLevel::new(1.0f64.next_down()).apply_constraint_maximizer(v, n);
     let e95_constraint = ConfidenceLevel::P95.apply_constraint_maximizer(v, n);
     let sure_constraint = ConfidenceLevel::from_magnitude(8.5).apply_constraint_maximizer(v, n);
     (
+        e00_constraint.estimate.hc_squared,
         e95_constraint.estimate.hc_squared,
         sure_constraint.estimate.hc_squared,
     )

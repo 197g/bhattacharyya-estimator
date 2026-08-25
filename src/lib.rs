@@ -145,6 +145,10 @@ pub struct Estimate {
 }
 
 impl Estimate {
+    pub(crate) fn unknown() -> Self {
+        Self::from_bhattarachya_coefficient(1.0)
+    }
+
     pub(crate) fn from_bhattarachya_coefficient(bc_estimate: f64) -> Self {
         // Under-estimation of H²
         let hc_squared = 1.0 - bc_estimate;

@@ -107,6 +107,13 @@ pub fn apply(
     sorted: &[f64],
     cdf: &dyn super::ContinuousCDF<f64, f64>,
 ) -> ConstraintEstimator {
+    if sorted.is_empty() {
+        return ConstraintEstimator {
+            estimate: super::Estimate::unknown(),
+            distributed: 1.0,
+        };
+    }
+
     let count = sorted.len() as f64;
     let sqrt_n = count.sqrt();
     let expand = FloatVal::from_div(level.dkw_constant, sqrt_n).above;
@@ -532,8 +539,13 @@ fn solve(a: f64, b: f64, c: f64) -> f64 {
     let ca = FloatVal::from_div(c, a).above;
 
     if !ba.above.is_finite() || !ca.is_finite() {
-        // Discard the quadratic term `a`, approximately.
-        return FloatVal::from_div(c, b).above;
+        if b <= 0.0 {
+            debug_assert!(b >= 0.0);
+            return f64::INFINITY;
+        } else {
+            // Discard the quadratic term `a`, approximately.
+            return FloatVal::from_div(c, b).above;
+        }
     }
     // Note: c was the negative of the usual constant term
     let d = (FloatVal::from_mul(ba.above, ba.above) + 4.0 * ca).above;
