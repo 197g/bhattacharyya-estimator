@@ -1,4 +1,4 @@
-//! Estimator for mixed probabilities.
+//! Estimator for mixed probabilities (essentially work-in-progress).
 //!
 //! Finds bounds on the coefficients of a mix mixed probability function with high probability. You
 //! give upper bounds of the squared Hellinger distance between all pairs of distributions. (For
