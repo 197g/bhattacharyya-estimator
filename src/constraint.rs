@@ -138,8 +138,11 @@ pub(crate) fn apply_for_expanded(
     let count = sorted.len() as f64;
     // Note: here we use a much smaller step than other estimators. The combined constraints take
     // care of ensuring that the error does not *add* up from this but rather the extra intervals
-    // can be utilized. The only reason to reduce the data here is that the loop below is otherwise
-    // cubic in runtime so we make it quadratic...
+    // can be utilized. The primary reason to reduce the data here is that the loop below is
+    // otherwise cubic in runtime so we make it quadratic... If we reduce it too much we'll just
+    // accumulate more floating point errors along the way (I think. Try reducing it to ´1` and see
+    // it no longer capable of estimate distances. I'm writing this while quite sleepy though. Your
+    // mileage may vary.)
     let vstep = (count.powf(2.0 / 3.0) / count.ln().powf(1.0 / 3.0)).ceil() as usize;
 
     let mut qs: Vec<_> = (0..sorted.len())
@@ -183,43 +186,6 @@ pub(crate) fn apply_for_expanded(
     // last sample and this must capture all remaining distribution.
     qs.push(1.0);
 
-    let minrange = (0..qs.len())
-        .map(|n| {
-            if n == 0 {
-                FloatVal::from_exact(lowers[0])
-            } else {
-                // Make sure we only relax this constraint `p_i >= lower[i] - upper[i - 1]` for all
-                // intervals and their associated variable..
-                //
-                // FIXME: If you have dense enough sampling this inversion is not that unlikely
-                // to occur by overlapping intervals around consecutive CDF samples. See this
-                // vertical diagram of a CDF and confidence correction particularly at the end or
-                // start of a short-tail distribution:
-                //
-                // ```
-                // n-1: |-x-|
-                // n  :   |-x-|
-                // ```
-                //
-                // Now, we only relax the constraint but we do that permanently. Instead, we could
-                // still track the current bound like normal, just relaxing it in each individual
-                // evaluation instead (e.g. `c.max(0.0)` in prefix_sum_iterator) and other places.
-                // Note that we already do `FloatVal::sum_above` to setup the solver itself that
-                // deals with the same basic issue over inverted interval bounds.
-                let v = FloatVal::from_add_with_magnitude(
-                    lowers[n].max(uppers[n - 1]),
-                    -uppers[n - 1],
-                    false,
-                );
-
-                FloatVal {
-                    above: v.above.max(0.0),
-                    below: v.below.max(0.0),
-                }
-            }
-        })
-        .collect::<Vec<_>>();
-
     // No more need for the last lowers value.
     let lowers_pre_j = {
         lowers.insert(0, 0.0);
@@ -241,7 +207,7 @@ pub(crate) fn apply_for_expanded(
     //
     // where `c` captures the constants moved to the right side. Initially, we have the offset
     // `-sqrt(ival)²` from the substitution initializing `offset` below.
-    let raw_c: Vec<_> = minrange.iter().map(|_| 0.0).collect();
+    let raw_c: Vec<_> = (0..qs.len()).map(|_| 0.0).collect();
 
     for c in &raw_c {
         assert!(
@@ -255,7 +221,46 @@ pub(crate) fn apply_for_expanded(
     let sqrtp: Vec<_> = ps.into_iter().map(Interval::new).collect();
 
     // Track each variable's offset, i.e. sum up the steps we take while it is active.
-    let mut offset: Vec<_> = minrange.iter().map(|_| 0.0).collect();
+    let mut offset: Vec<_> = (0..qs.len()).map(|_| 0.0).collect();
+
+    // Tracks how far each interval requires us to step to fulfill its minimum condition. When an
+    // interval is considered by its solution we also check the step length and use the larger of
+    // the two.
+    let minstep = (0..qs.len())
+        .map(|n| {
+            if n == 0 {
+                0.0
+            } else {
+                // Make sure we only relax this constraint `p_i >= lower[i] - upper[i - 1]` for all
+                // intervals and their associated variable..
+                //
+                // FIXME: If you have dense enough sampling this inversion is not that unlikely
+                // to occur by overlapping intervals around consecutive CDF samples. See this
+                // vertical diagram of a CDF and confidence correction particularly at the end or
+                // start of a short-tail distribution:
+                //
+                // ```
+                // n-1: |-x-|
+                // n  :   |-x-|
+                // ```
+                //
+                // Now, we only relax the constraint but we do that permanently. Instead, we could
+                // still track the current bound like normal, just relaxing it in each individual
+                // evaluation instead (e.g. `c.max(0.0)` in prefix_sum_iterator) and other places.
+                // Note that we already do `FloatVal::sum_above` to setup the solver itself that
+                // deals with the same basic issue over inverted interval bounds.
+                let v = FloatVal::from_add_with_magnitude(
+                    lowers_pre_j[n - 1].max(uppers[n - 1]),
+                    -uppers[n - 1],
+                    false,
+                )
+                .below
+                .max(0.0);
+
+                FloatVal::from_div(v, sqrtp[n].sqrt.above).below
+            }
+        })
+        .collect::<Vec<_>>();
 
     assert!(
         {
@@ -288,12 +293,14 @@ pub(crate) fn apply_for_expanded(
         a: raw_a,
         b: raw_b,
         c: raw_c,
+        minstep,
     };
 
     let mut total_interval = 0.0;
     let mut total_p = 0.0;
 
     let mut value = 0.0;
+    let mut taken_steps = 0.0;
 
     while !pre.is_empty() {
         let mut lambda = f64::INFINITY;
@@ -305,20 +312,28 @@ pub(crate) fn apply_for_expanded(
         assert_eq!(pre.c.len(), sqrtp.len());
         assert_eq!(offset.len(), sqrtp.len());
 
-        for (j, k, [a, b, prec]) in pre.prefix_sum_iterator() {
+        for prefix in pre.prefix_sum_iterator() {
+            let ConsideredVariables {
+                j,
+                k,
+                inequality: [a, b, prec],
+                minstep,
+            } = prefix;
+
             let ival = FloatVal::sum_above([uppers[k], -lowers_pre_j[j]]);
             let c = FloatVal::sum_above([ival, -prec]);
+            let minstep = -FloatVal::sum_above([-taken_steps, minstep]);
 
             assert!(
                 c >= 0.0,
                 "c must be an overestimation of a non-negative number"
             );
 
-            let a_max = solve(a, b, c);
-            assert!(a_max >= 0.0);
+            let step_max = solve(a, b, c).max(minstep);
+            assert!(step_max >= 0.0);
 
-            if a_max < lambda {
-                lambda = a_max;
+            if step_max < lambda {
+                lambda = step_max;
                 best = (j, k, [a, b, prec]);
             }
         }
@@ -329,6 +344,7 @@ pub(crate) fn apply_for_expanded(
         }
 
         assert!(lambda >= 0.0);
+        taken_steps = FloatVal::sum_above([taken_steps, lambda]);
         // Remove (j..k) from the problem and update the prefix sums.
         let (j, k, _debug_setup) = best;
 
@@ -595,6 +611,14 @@ struct PrefixLookup {
     a: Vec<f64>,
     b: Vec<f64>,
     c: Vec<f64>,
+    minstep: Vec<f64>,
+}
+
+struct ConsideredVariables {
+    j: usize,
+    k: usize,
+    inequality: [f64; 3],
+    minstep: f64,
 }
 
 impl PrefixLookup {
@@ -669,7 +693,7 @@ impl PrefixLookup {
         }
     }
 
-    fn prefix_sum_iterator(&self) -> impl Iterator<Item = (usize, usize, [f64; 3])> + '_ {
+    fn prefix_sum_iterator(&self) -> impl Iterator<Item = ConsideredVariables> + '_ {
         let n = self.a.len();
 
         // TODO: performance wise intervals must contain at least on active variable but intervals
@@ -678,7 +702,7 @@ impl PrefixLookup {
         // intervals more efficiently than a simple test.
         (0..n).flat_map(move |j| {
             (j..n)
-                .scan(([0.0; 3], false), move |(acc, any_active), k| {
+                .scan(([0.0; 4], false), move |(acc, any_active), k| {
                     let is_active = self.active[k];
 
                     let a = if is_active { self.a[k] } else { 0.0 };
@@ -695,13 +719,27 @@ impl PrefixLookup {
                         FloatVal::from_add(acc[0], a).below,
                         FloatVal::from_add(acc[1], b).below,
                         FloatVal::from_add(acc[2], c).below,
+                        if is_active {
+                            acc[3].max(self.minstep[k])
+                        } else {
+                            acc[3]
+                        },
                     ];
 
                     Some((j, k, (*acc, *any_active)))
                 })
-                .filter_map(
-                    |(j, k, (acc, any_active))| if any_active { Some((j, k, acc)) } else { None },
-                )
+                .filter_map(|(j, k, (acc, any_active))| {
+                    if any_active {
+                        Some(ConsideredVariables {
+                            j,
+                            k,
+                            inequality: [acc[0], acc[1], acc[2]],
+                            minstep: acc[3],
+                        })
+                    } else {
+                        None
+                    }
+                })
         })
     }
 }
