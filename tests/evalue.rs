@@ -80,6 +80,9 @@ fn check_ecdf<const N: usize>(v: &[[f64; N]], n: &dyn ContinuousCDF<f64, f64>, a
     let evalue = evalue_expectation(MaximumHellingerHypothesis::new(hellinger));
     eprintln!("E-Value ({hellinger:.4}) {:?} {}", evalue, judge(hellinger, evalue));
 
+    let evalue = evalue_expectation(MaximumHellingerHypothesis::new(0.0 / 3.0));
+    eprintln!("E-Value (0.0000) {:?} {}", evalue, judge(0.0 / 3.0, evalue));
+
     let evalue = evalue_expectation(MaximumHellingerHypothesis::new(1.0 / 3.0));
     eprintln!("E-Value (0.3333) {:?} {}", evalue, judge(1.0 / 3.0, evalue));
 

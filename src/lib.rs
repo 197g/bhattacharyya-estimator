@@ -226,12 +226,37 @@ impl Estimate {
 /// just demonstrated so it is a valid E-value for the hypothesis.
 pub struct MaximumHellingerHypothesis {
     expected: f64,
+    ks_function: fn(f64) -> Evalue,
 }
 
 impl MaximumHellingerHypothesis {
     pub fn new(expected: f64) -> Self {
         assert!((0.0..=1.0).contains(&expected));
-        Self { expected }
+        Self {
+            expected,
+            ks_function: Self::from_ks_statistic_sqrt,
+        }
+    }
+
+    pub fn with_root_kolmogorow_smirnov_statistic(self) -> Self {
+        MaximumHellingerHypothesis {
+            ks_function: Self::from_ks_statistic_sqrt,
+            ..self
+        }
+    }
+
+    pub fn with_linear_kolmogorow_smirnov_statistic(self) -> Self {
+        MaximumHellingerHypothesis {
+            ks_function: Self::from_ks_statistic,
+            ..self
+        }
+    }
+
+    pub fn with_square_kolmogorow_smirnov_statistic(self) -> Self {
+        MaximumHellingerHypothesis {
+            ks_function: Self::from_ks_statistic_square,
+            ..self
+        }
     }
 
     pub fn e_value(&self, sorted: &[f64], cdf: &dyn ContinuousCDF<f64, f64>) -> Evalue {
@@ -263,7 +288,7 @@ impl MaximumHellingerHypothesis {
         // FIXME: bisection search is a very crude method here. The task of
         // `from_matched_quantiles` is a dot product which we can surely incrementally compute much
         // more efficiently. Or find its zero-crossing with `bc_bound` as it is monotonic.
-        for _ in 0..64 {
+        for _ in 0..32 {
             let expand = f64::midpoint(min, max);
             // FIXME: for efficiency, do not clone here in every iteration.
             let estimate = Estimate::from_matched_quantiles(ps.clone(), qs.clone(), expand);
@@ -276,7 +301,7 @@ impl MaximumHellingerHypothesis {
         }
 
         let eps = min;
-        Self::from_ks_statistic_sqrt(count.sqrt() * eps)
+        (self.ks_function)(count.sqrt() * eps)
     }
 
     pub fn e_value_by_constraint(
@@ -289,7 +314,7 @@ impl MaximumHellingerHypothesis {
 
         let (mut min, mut max) = (0.0, 1.0);
 
-        for _ in 0..64 {
+        for _ in 0..32 {
             let expand = f64::midpoint(min, max);
             let constraints = constraint::apply_for_expanded(expand, sorted, cdf, Some(bc_bound));
 
@@ -301,7 +326,7 @@ impl MaximumHellingerHypothesis {
         }
 
         let eps = min;
-        Self::from_ks_statistic_sqrt(count.sqrt() * eps)
+        (self.ks_function)(count.sqrt() * eps)
     }
 
     fn from_ks_statistic_sqrt(s: f64) -> Evalue {

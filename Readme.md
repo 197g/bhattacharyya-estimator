@@ -27,6 +27,9 @@ The library can also flip this around. Instead of choosing a confidence level
 you can give a maximum Hellinger distance of interest and the library then
 computes a random value with expected value of at most `1` if the bound holds,
 being evidence against the hypothesized value if the returned value is larger.
+This is all a little experimental; my experience with this is little and I'm
+glad to have done at least one of the expected values correctly. The power of
+this is questionable, too. But there it is anyways.
 
 It does so by computing a large-as-possible total variational distance band
 around the empirical distribution for which it can demonstrate, with either of
