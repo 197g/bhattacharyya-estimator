@@ -54,6 +54,26 @@
 //! of unfulfilled constraints until we hit the boundary of the feasible region.
 //!
 //! I don't know, maybe I've convinced myself of something completely untrue here.
+//!
+//! ## Numerical approach
+//!
+//! With the above analytical framework, we can think about numerical solutions. The biggest
+//! instability is clearly the stepping. We must overestimate terms in its computation and if we
+//! solved it naively like a quadratic equation at each current point, we'd soon be stuck
+//! accumulating thousands of individual errors that get square rooted—so we'll have 27 digits at
+//! best and probably much less. But we want to compute with millions of samples if we can.
+//!
+//! Hence, we will use a different representation. Since each result is of the form `l·sqrt(p_i)`
+//! and the right is constant we will only compute `l`. Further the equations we solve in each step
+//! to determine the smallest necessary step to take is for the interval j, k of the form:
+//!
+//!    l²·sum(sqrt(p_i)²) >= sum(c_i)
+//!
+//! where `c_i` is `0.0` for all open variables and `(l_i·sqrt(p_i))²`, i.e. the contribution of the
+//! solution to the empirical CDF, for all variables already constrained by a bound. Crucially this
+//! holds analytical and does not require the computation of any square roots at all, we reuse
+//! the real interval lengths of the analytical CDF.
+//!
 
 // I disagree with clippy on enough of these to disable this for consistency.
 #![allow(clippy::needless_range_loop)]
@@ -143,7 +163,7 @@ pub(crate) fn apply_for_expanded(
     // accumulate more floating point errors along the way (I think. Try reducing it to ´1` and see
     // it no longer capable of estimate distances. I'm writing this while quite sleepy though. Your
     // mileage may vary.)
-    let vstep = (count.powf(2.0 / 3.0) / count.ln().powf(1.0 / 3.0)).ceil() as usize;
+    let vstep = (count.powf(2.0 / 3.0) / count.ln().powf(2.0 / 3.0)).ceil() as usize;
 
     let mut qs: Vec<_> = (0..sorted.len())
         .step_by(vstep)
@@ -196,9 +216,6 @@ pub(crate) fn apply_for_expanded(
     // First component of the constraint has `s_i²` which the step expands to `l²·sqrt(p_i)²`.
     // Here we need an underestimation to initialize the constraint system.
     let raw_a: Vec<_> = ps.iter().map(|ival| ival.below).collect();
-
-    // this will become at least: 2.0 * sqrt(minrange * p_i).
-    let raw_b: Vec<_> = (0..raw_a.len()).map(|_| 0.0).collect();
 
     // `raw_c` is the compensation for `offset`. From the constraints `s_i >= ival` we subsequently
     // update these whenever we update any of the variables in that sum. In the general case:
@@ -290,7 +307,6 @@ pub(crate) fn apply_for_expanded(
     let mut pre = PrefixLookup {
         active: core::iter::repeat_n(true, qs.len()).collect(),
         a: raw_a,
-        b: raw_b,
         c: raw_c,
         minstep,
         step: core::iter::repeat_n(0.0, qs.len()).collect(),
@@ -299,7 +315,7 @@ pub(crate) fn apply_for_expanded(
     let mut total_interval = 0.0;
     let mut total_p = 0.0;
 
-    let mut taken_steps = 0.0;
+    let mut taken_steps = FloatVal::from_exact(0.0);
 
     while !pre.is_empty() {
         let mut lambda = f64::INFINITY;
@@ -307,7 +323,6 @@ pub(crate) fn apply_for_expanded(
 
         assert_eq!(pre.active.len(), sqrtp.len());
         assert_eq!(pre.a.len(), sqrtp.len());
-        assert_eq!(pre.b.len(), sqrtp.len());
         assert_eq!(pre.c.len(), sqrtp.len());
         assert_eq!(offset.len(), sqrtp.len());
 
@@ -321,14 +336,14 @@ pub(crate) fn apply_for_expanded(
 
             let ival = FloatVal::sum_above([uppers[k], -lowers_pre_j[j]]);
             let c = FloatVal::sum_above([ival, -prec]);
-            let minstep = -FloatVal::sum_above([-taken_steps, minstep]);
+            let minstep = -FloatVal::sum_above([-taken_steps.above, minstep]);
 
             assert!(
                 c >= 0.0,
                 "c must be an overestimation of a non-negative number"
             );
 
-            let step_max = solve(a, b, c).max(minstep);
+            let step_max = solve(a, taken_steps, c).max(minstep);
             assert!(step_max >= 0.0);
 
             if step_max < lambda {
@@ -343,7 +358,7 @@ pub(crate) fn apply_for_expanded(
         }
 
         assert!(lambda >= 0.0);
-        taken_steps = FloatVal::sum_above([taken_steps, lambda]);
+        taken_steps = taken_steps + lambda;
         // Remove (j..k) from the problem and update the prefix sums.
         let (j, k, _debug_setup) = best;
 
@@ -356,9 +371,6 @@ pub(crate) fn apply_for_expanded(
         //
         // Update the prefix sums by removing the contribution of the removed variables. These are
         // unchanged from this point onwards.
-
-        // First offset all the terms by the step (uses its current `b`).
-        pre.adjust(&sqrtp, lambda);
 
         // Then update variable offsets themselves. Note that we need to overestimate all variables
         // in the end, consequently this must error on the side of stepping further than `adjust`.
@@ -396,7 +408,7 @@ pub(crate) fn apply_for_expanded(
         );
         */
 
-        pre.remove(j, k, &offset, taken_steps);
+        pre.remove(j, k, taken_steps);
 
         if cfg!(debug_assertions) {
             let mut ival = FloatVal::from_exact(0.0);
@@ -404,30 +416,12 @@ pub(crate) fn apply_for_expanded(
 
             for idx in j..=k {
                 let c = pre.c[idx];
-                let o = offset[idx];
+
+                let l = FloatVal::from_mul(pre.step[idx], pre.step[idx]).above;
+                let a = sqrtp[idx].len.above;
 
                 cval = FloatVal::from_add(cval, c).below;
-                ival = ival + FloatVal::from_mul(o, o).above;
-            }
-
-            assert!(
-                ival.above >= cval,
-                "Constraints do not underestimate variables {}/{:?}\n{_debug_setup:?}",
-                cval,
-                ival,
-            );
-        }
-
-        if cfg!(debug_assertions) {
-            let mut ival = FloatVal::from_exact(0.0);
-            let mut cval = 0.0;
-
-            for idx in j..=k {
-                let c = pre.c[idx];
-                let o = offset[idx];
-
-                cval = FloatVal::from_add(cval, c).below;
-                ival = ival + FloatVal::from_mul(o, o).above;
+                ival = ival + FloatVal::from_mul(l, a).above;
             }
 
             assert!(
@@ -539,21 +533,13 @@ pub(crate) fn apply_for_expanded(
     }
 }
 
-/// Solve al² + bl <= c for the maximum l >= 0. Note that a, b, c are / should be all non-negative.
-fn solve(a: f64, b: f64, c: f64) -> f64 {
+/// Solve a(l + b)² >= c for the minimum l >= 0. Note that a, b, c are / should be all non-negative.
+fn solve(a: f64, b: FloatVal, c: f64) -> f64 {
     assert!(a.is_finite());
-    assert!(b.is_finite());
     assert!(c.is_finite());
 
     if a == 0.0 {
-        if b <= 0.0 {
-            debug_assert!(b >= 0.0);
-            return f64::INFINITY;
-        }
-
-        assert!(b >= 0.0, "Negative b coefficient in linear equation {b}");
-        assert!(c >= 0.0, "Negative c coefficient in linear equation {c}");
-        return c / b;
+        return f64::INFINITY;
     }
 
     assert!(a >= 0.0, "Negative a coefficient in quadratic equation {a}");
@@ -562,41 +548,16 @@ fn solve(a: f64, b: f64, c: f64) -> f64 {
     // Avoid cancellation issues. We need to estimate `ba` in both directions, once for the square
     // root term (we only care about the positive solution) and once for its contribution in the
     // rest.
-    let ba = FloatVal::from_div(b, a);
     let ca = FloatVal::from_div(c, a).above;
 
-    if !ba.above.is_finite() || !ca.is_finite() {
-        if b <= 0.0 {
-            debug_assert!(b >= 0.0);
-            return f64::INFINITY;
-        } else {
-            // Discard the quadratic term `a`, approximately.
-            return FloatVal::from_div(c, b).above;
-        }
-    }
-    // Note: c was the negative of the usual constant term
-    let d = (FloatVal::from_mul(ba.above, ba.above) + 4.0 * ca).above;
-
-    if d < 0.0 {
-        debug_assert!(false, "Negative discriminant in quadratic equation");
-        return 0.0;
+    if !ca.is_finite() {
+        return f64::INFINITY;
     }
 
-    assert!(
-        d.sqrt() >= b,
-        "Negative solution in quadratic equation {a}x²-{c}"
-    );
+    let dsq = FloatVal::from_sqrt(ca).above;
+    assert!(dsq >= b.below);
 
-    // `ba.above**2` might overflow floating point range.
-    let dsq = if d.is_finite() {
-        FloatVal::from_sqrt(d).above
-    } else {
-        // Approximate this square root by `ba.above + sqrt(4.0 * ca)` instead.
-        FloatVal::sum_above([ba.above, 2.0 * FloatVal::from_sqrt(ca).above])
-    };
-
-    // FIXME: subnormals might actually round this wrong? Unsure.
-    FloatVal::sum_above([dsq, -ba.below]) / 2.0
+    FloatVal::sum_above([dsq, -b.below])
 }
 
 #[derive(Default, Debug)]
@@ -620,7 +581,6 @@ impl Interval {
 struct PrefixLookup {
     active: Vec<bool>,
     a: Vec<f64>,
-    b: Vec<f64>,
     c: Vec<f64>,
     minstep: Vec<f64>,
     step: Vec<f64>,
@@ -638,82 +598,26 @@ impl PrefixLookup {
         !self.active.iter().copied().any(|x| x)
     }
 
-    /// Adjust the constraint system with a known step.
-    ///
-    /// Note we must only ever *relax* the constraints. That is, the right side is only allowed to
-    /// get larger than its real value, and `b` smaller. `c` is the right side compensation
-    /// subtracting the constant terms accumulated from substitutions and hence we also error on the
-    /// lower side.
-    ///
-    /// The `x` in each inequality is the actual step length in direction `sqrtp[idx]` for each
-    /// variable. Our systems are of the form, where `x` is a step associated with the solution:
-    ///
-    /// ```text
-    /// ax² + bx >= … - c
-    /// ```
-    fn adjust(&mut self, sq: &[Interval], lambda: f64) {
-        let c_step = FloatVal::from_mul(lambda, lambda);
+    fn remove(&mut self, j: usize, k: usize, lambda: FloatVal) {
+        // We must underestimate the used-up interval budget.
+        let c_step = FloatVal::from_mul(lambda.below, lambda.below);
 
-        assert_eq!(self.a.len(), sq.len());
-        assert_eq!(self.b.len(), sq.len());
-        assert_eq!(self.c.len(), sq.len());
-
-        for idx in 0..sq.len() {
-            if !self.active[idx] {
-                continue;
-            }
-
-            let c = &mut self.c[idx];
-            let a = self.a[idx];
-            let b = self.b[idx];
-
-            let sq_i = &sq[idx];
-
-            let lambda = FloatVal::from_exact(lambda);
-
-            // Note: b here is already biased with the direction of the step sqrt(p_i).
-            let constants = FloatVal::from_add((lambda * b).below, (c_step * a).below);
-            *c = FloatVal::from_add(*c, constants.below).below;
-
-            assert!(
-                !(*c < 0.0),
-                "Negative c coefficient after adjustment {lambda:?}·{sq_i:?}"
-            );
-        }
-
-        for idx in 0..sq.len() {
-            if !self.active[idx] {
-                continue;
-            }
-
-            let b = &mut self.b[idx];
-            let a = self.a[idx];
-            let sq_i = &sq[idx];
-
-            let lambda = FloatVal::from_exact(lambda);
-            *b = FloatVal::from_add(*b, 2.0 * (lambda * a).below).below;
-
-            assert!(
-                *b >= 0.0,
-                "Negative b coefficient after adjustment {lambda:?}·{sq_i:?}"
-            );
-        }
-    }
-
-    fn remove(&mut self, j: usize, k: usize, vars: &[f64], step: f64) {
         for idx in j..=k {
             if self.active[idx] {
-                self.step[idx] = step;
+                self.step[idx] = lambda.above;
+
+                let c = &mut self.c[idx];
+                *c = (c_step * self.a[idx]).below;
+
+                assert!(
+                    !(*c < 0.0),
+                    "Negative c coefficient after adjustment at {lambda:?}"
+                );
             }
         }
 
         self.a[j..=k].fill(0.0);
-        self.b[j..=k].fill(0.0);
         self.active[j..=k].fill(false);
-
-        for (c, &var) in self.c[j..=k].iter_mut().zip(vars) {
-            *c = (*c).min(FloatVal::from_mul(var, var).below);
-        }
     }
 
     fn prefix_sum_iterator(&self) -> impl Iterator<Item = ConsideredVariables> + '_ {
@@ -729,7 +633,6 @@ impl PrefixLookup {
                     let is_active = self.active[k];
 
                     let a = if is_active { self.a[k] } else { 0.0 };
-                    let b = if is_active { self.b[k] } else { 0.0 };
                     let c = self.c[k];
 
                     assert!(a >= 0.0);
@@ -740,7 +643,7 @@ impl PrefixLookup {
                     // originally messed this up and just never stored the accumulator back).
                     *acc = [
                         FloatVal::from_add(acc[0], a).below,
-                        FloatVal::from_add(acc[1], b).below,
+                        0.0,
                         FloatVal::from_add(acc[2], c).below,
                         if is_active {
                             acc[3].max(self.minstep[k])
