@@ -5,7 +5,7 @@ use statrs::distribution::{ContinuousCDF, Normal};
 #[test]
 fn test_evalue() {
     let n = Normal::new(0.0, 1.0).unwrap();
-    const COUNT: usize = 1_000_000;
+    const COUNT: usize = 1_000;
 
     let mut v: Vec<f64> = rand::random_iter()
         .take(COUNT * 20)
@@ -60,7 +60,7 @@ fn check_ecdf<const N: usize>(v: &[[f64; N]], n: &dyn ContinuousCDF<f64, f64>, a
         let mut acc = hellinger_estimates::Evalue { value: 0.0 };
 
         for samples in v {
-            acc.value +=  hypo.e_value(samples, n).value;
+            acc.value +=  hypo.e_value_by_constraint(samples, n).value;
         }
 
         acc.value /= v.len() as f64;

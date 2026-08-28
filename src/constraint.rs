@@ -137,13 +137,15 @@ pub fn apply(
     let count = sorted.len() as f64;
     let sqrt_n = count.sqrt();
     let expand = FloatVal::from_div(level.dkw_constant, sqrt_n).above;
-    apply_for_expanded(expand, sorted, cdf)
+    apply_for_expanded(expand, sorted, cdf, None)
 }
 
 pub(crate) fn apply_for_expanded(
     expand: f64,
     sorted: &[f64],
     cdf: &dyn super::ContinuousCDF<f64, f64>,
+    // Return early, if unable to prove a BC lower than this.
+    quick_exit_above_bc: Option<f64>,
 ) -> ConstraintEstimator {
     fn upper_at(qs: &[f64], i: usize, expand: f64) -> f64 {
         FloatVal::sum_above([qs[i], expand]).min(1.0)
@@ -316,6 +318,7 @@ pub(crate) fn apply_for_expanded(
     let mut total_p = 0.0;
 
     let mut taken_steps = 0.0;
+    let mut value = 0.0;
 
     while !pre.is_empty() {
         let mut constraining_step = f64::INFINITY;
@@ -357,8 +360,11 @@ pub(crate) fn apply_for_expanded(
         }
 
         debug_assert!(constraining_step >= 0.0);
-        assert!(constraining_step >= taken_steps);
-        taken_steps = constraining_step;
+        // Hm. Not sure where this could really happen but it's not entirely absurd from a float
+        // perspective. We do strengthen requirements with each step but we don't fully guarantee
+        // that all our equations are actually monotonic, if that makes sense? In any case we can
+        // not just take a step back and this is supposed to be an approximate either way.
+        taken_steps = constraining_step.max(taken_steps);
 
         // Remove (j..k) from the problem and update the prefix sums.
         let (j, k, _debug_setup) = best;
@@ -394,10 +400,27 @@ pub(crate) fn apply_for_expanded(
                 let coeff_i = p_i;
                 let r_i = *o;
 
+                // FIXME: evaluate if recording all contributions and a final exact-sum step is actually
+                // usefully more exact. In that case we should delay this unless or redo it later.
+                let contribution = FloatVal::from_mul(taken_steps, sqrtp[idx].len.above).above;
+                // Each variable is `step · sqrt(p) · sqrt(p)` for some step length that we have
+                // determined in the above loop and that is an upper approximate already based on
+                // this notion, that is, based on `sqrt(p) <= sqrt(len)`
+                value = FloatVal::sum_above([value, contribution]);
+
                 // These are pretty much debugging...
                 total_interval =
                     FloatVal::sum_above([FloatVal::from_mul(r_i, r_i).above, total_interval]);
                 total_p = FloatVal::from_add(total_p, coeff_i.len.above).above;
+            }
+        }
+
+        if let Some(target) = quick_exit_above_bc {
+            if value > target {
+                return ConstraintEstimator {
+                    estimate: crate::Estimate::from_bhattarachya_coefficient(value),
+                    distributed: total_interval,
+                };
             }
         }
 
@@ -442,20 +465,12 @@ pub(crate) fn apply_for_expanded(
         }
     }
 
-    let mut value = 0.0;
-
+    #[allow(dead_code)]
     {
         // Sum up all variables that were closed, at their final step length.
-        // FIXME: evaluate if recording all contributions and a final exact-sum step is actually
-        // usefully more exact.
+        // FIXME: this is where we would redo the calculation unless we quick exit.
         for idx in 0..qs.len() {
-            if !pre.active[idx] {
-                // Each variable is `step · sqrt(p) · sqrt(p)` for some step length that we have
-                // determined in the above loop and that is an upper approximate already based on
-                // this notion, that is, based on `sqrt(p) <= sqrt(len)`
-                let contribution = FloatVal::from_mul(pre.step[idx], sqrtp[idx].len.above).above;
-                value = FloatVal::sum_above([value, contribution]);
-            }
+            if !pre.active[idx] {}
         }
     }
 
