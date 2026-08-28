@@ -205,8 +205,7 @@ pub(crate) fn apply_for_expanded(
     //
     // `a·s_i² + b·s_i >= ival - c`
     //
-    // where `c` captures the constants moved to the right side. Initially, we have the offset
-    // `-sqrt(ival)²` from the substitution initializing `offset` below.
+    // where `c` captures the constants moved to the right side.
     let raw_c: Vec<_> = (0..qs.len()).map(|_| 0.0).collect();
 
     for c in &raw_c {
@@ -228,7 +227,7 @@ pub(crate) fn apply_for_expanded(
     // the two.
     let minstep = (0..qs.len())
         .map(|n| {
-            if n == 0 {
+            if n == 0 || (sqrtp[n].len.above <= 0.0) {
                 0.0
             } else {
                 // Make sure we only relax this constraint `p_i >= lower[i] - upper[i - 1]` for all
@@ -257,7 +256,7 @@ pub(crate) fn apply_for_expanded(
                 .below
                 .max(0.0);
 
-                FloatVal::from_div(v, sqrtp[n].sqrt.above).below
+                FloatVal::from_div(v, sqrtp[n].len.above).below
             }
         })
         .collect::<Vec<_>>();
@@ -294,12 +293,12 @@ pub(crate) fn apply_for_expanded(
         b: raw_b,
         c: raw_c,
         minstep,
+        step: core::iter::repeat_n(0.0, qs.len()).collect(),
     };
 
     let mut total_interval = 0.0;
     let mut total_p = 0.0;
 
-    let mut value = 0.0;
     let mut taken_steps = 0.0;
 
     while !pre.is_empty() {
@@ -383,28 +382,21 @@ pub(crate) fn apply_for_expanded(
                 let coeff_i = p_i;
                 let r_i = *o;
 
-                // These are just debugging..
-                total_interval = r_i.mul_add(r_i, total_interval);
+                // These are pretty much debugging...
+                total_interval =
+                    FloatVal::sum_above([FloatVal::from_mul(r_i, r_i).above, total_interval]);
                 total_p = FloatVal::from_add(total_p, coeff_i.len.above).above;
-
-                // Value gives us the final result, we also must overestimate it.
-                // FIXME: evaluate if recording all contributions separately with only a final
-                // exact-sum step is actually more beneficial.
-                value = {
-                    let contribution = FloatVal::from_mul(coeff_i.sqrt.above, r_i).above;
-                    FloatVal::from_add(contribution, value).above
-                };
             }
         }
 
         /*
         eprintln!(
-            "Step length: {lambda}/{:?}, value: {value} / {total_p}×{total_interval}",
+            "Step length: {lambda}/{:?}: {total_p}×{total_interval}",
             j..=k
         );
         */
 
-        pre.remove(j, k, &offset);
+        pre.remove(j, k, &offset, taken_steps);
 
         if cfg!(debug_assertions) {
             let mut ival = FloatVal::from_exact(0.0);
@@ -451,6 +443,23 @@ pub(crate) fn apply_for_expanded(
         }
     }
 
+    let mut value = 0.0;
+
+    {
+        // Sum up all variables that were closed, at their final step length.
+        // FIXME: evaluate if recording all contributions and a final exact-sum step is actually
+        // usefully more exact.
+        for idx in 0..qs.len() {
+            if !pre.active[idx] {
+                // Each variable is `step · sqrt(p) · sqrt(p)` for some step length that we have
+                // determined in the above loop and that is an upper approximate already based on
+                // this notion, that is, based on `sqrt(p) <= sqrt(len)`
+                let contribution = FloatVal::from_mul(pre.step[idx], sqrtp[idx].len.above).above;
+                value = FloatVal::sum_above([value, contribution]);
+            }
+        }
+    }
+
     // We may have intervals so small that the simultaneous step length by solving is infinite.
     // This, problematically, would leave some data unaccounted for. We must instead overestimate
     // the contribution from those variables individually.
@@ -468,7 +477,8 @@ pub(crate) fn apply_for_expanded(
             *o = r_i;
 
             // These are just debugging..
-            total_interval = r_i.mul_add(r_i, total_interval);
+            total_interval =
+                FloatVal::sum_above([FloatVal::from_mul(r_i, r_i).above, total_interval]);
             total_p = FloatVal::from_add(total_p, coeff_i.len.above).above;
 
             // Value gives us the final result, we also must overestimate it.
@@ -479,7 +489,8 @@ pub(crate) fn apply_for_expanded(
         }
     }
 
-    assert!(total_p >= 1.0, "All data accounted for");
+    assert!(total_p >= 1.0, "All analytical data accounted for");
+    assert!(total_interval >= 1.0, "All empirical data accounted for");
 
     {
         let mut sum = FloatVal::from_exact(0.0);
@@ -612,6 +623,7 @@ struct PrefixLookup {
     b: Vec<f64>,
     c: Vec<f64>,
     minstep: Vec<f64>,
+    step: Vec<f64>,
 }
 
 struct ConsideredVariables {
@@ -632,9 +644,14 @@ impl PrefixLookup {
     /// get larger than its real value, and `b` smaller. `c` is the right side compensation
     /// subtracting the constant terms accumulated from substitutions and hence we also error on the
     /// lower side.
+    ///
+    /// The `x` in each inequality is the actual step length in direction `sqrtp[idx]` for each
+    /// variable. Our systems are of the form, where `x` is a step associated with the solution:
+    ///
+    /// ```text
+    /// ax² + bx >= … - c
+    /// ```
     fn adjust(&mut self, sq: &[Interval], lambda: f64) {
-        // Redefine s'_i = s_i - lambda * sq_i. This is the substitution of variables after taking a
-        // step in the direction of the gradient. (Recall: a_i² = sq_i.len)
         let c_step = FloatVal::from_mul(lambda, lambda);
 
         assert_eq!(self.a.len(), sq.len());
@@ -647,14 +664,15 @@ impl PrefixLookup {
             }
 
             let c = &mut self.c[idx];
+            let a = self.a[idx];
             let b = self.b[idx];
+
             let sq_i = &sq[idx];
 
             let lambda = FloatVal::from_exact(lambda);
-            let sq_i_len = FloatVal::from_mul(sq_i.sqrt.below, sq_i.sqrt.below).below;
 
             // Note: b here is already biased with the direction of the step sqrt(p_i).
-            let constants = FloatVal::from_add((lambda * b).below, (c_step * sq_i_len).below);
+            let constants = FloatVal::from_add((lambda * b).below, (c_step * a).below);
             *c = FloatVal::from_add(*c, constants.below).below;
 
             assert!(
@@ -669,12 +687,11 @@ impl PrefixLookup {
             }
 
             let b = &mut self.b[idx];
+            let a = self.a[idx];
             let sq_i = &sq[idx];
 
             let lambda = FloatVal::from_exact(lambda);
-            let sq_i_len = FloatVal::from_mul(sq_i.sqrt.below, sq_i.sqrt.below).below;
-
-            *b = FloatVal::from_add(*b, 2.0 * (lambda * sq_i_len).below).below;
+            *b = FloatVal::from_add(*b, 2.0 * (lambda * a).below).below;
 
             assert!(
                 *b >= 0.0,
@@ -683,7 +700,13 @@ impl PrefixLookup {
         }
     }
 
-    fn remove(&mut self, j: usize, k: usize, vars: &[f64]) {
+    fn remove(&mut self, j: usize, k: usize, vars: &[f64], step: f64) {
+        for idx in j..=k {
+            if self.active[idx] {
+                self.step[idx] = step;
+            }
+        }
+
         self.a[j..=k].fill(0.0);
         self.b[j..=k].fill(0.0);
         self.active[j..=k].fill(false);
