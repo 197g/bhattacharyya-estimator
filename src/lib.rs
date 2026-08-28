@@ -92,16 +92,10 @@ impl ConfidenceLevel {
     /// Use numerical methods to find an upper-bound of the Bhattacharyya Coefficient that any CDF
     /// within the Dvoretzky-Kiefer-Wolfowitz bounds could have.
     ///
-    /// FIXME: this method is mathematically correct, I think, but numerically it isn't a perfect
-    /// upper-bound estimator. We're doing steps to determine solutions for the sum based on
-    /// possible roots-of-interval-lengths that fit and this method may round the wrong way; we
-    /// square the numerical value and do steps based on division. (E.g in a perfect match where BC
-    /// should `1` an upper-bound of `0.9999992030366093` is reported). That is of course
-    /// unfortunate and should probably be fixed.
-    ///
-    /// It is still much better than the unreliable estimator from the other module and provides a
-    /// tight bound for closely matching distributions, where the guaranteed estimators would be
-    /// far too cautious.
+    /// It is usually better than even the unreliable estimator for distributions with a small tail
+    /// and provides a tight bound for closely matching distributions, where the guaranteed
+    /// estimators would be far too cautious. The cost of this is runtime. The defaults are tuned to
+    /// a roughly linear, slightly more, runtime in the number of samples in `sorted`.
     pub fn apply_constraint_maximizer(
         &self,
         sorted: &[f64],
@@ -223,26 +217,13 @@ impl Estimate {
 /// bound, it will also hold for all smaller values. Note that the condition is incompatible with
 /// our hypothesis which is of the form `BC(P, Q) > bc_bound = 1 - h²`.
 ///
-/// So, assuming that the hypothesis is true implies the true total variance ŧ between sample and
-/// its underlying distribution to be greater than `ε`. The probability of this is bounded from
-/// above by the Dvoretzky-Kiefer-Wolfowitz bound (2 * exp(-2N * ε**2)). We construct the random
-/// variable `2 * N * ε` for the sample. Then the contribution to the expected value of that can be
-/// bounded by `4 * N * ŧ * exp(-2N * ŧ**2)` which we recognize as the density of a Weibull
-/// distribution (λ = 1 / sqrt(2 * N), k = 2)—so the mean is `1`.
-///
-/// From the law of total expectation this construction is an E-value.
-///
-/// ```text
-/// E[2nε] = E[E[2nε|tvd=ŧ]] <= E[E[1]] = 1
-/// ```
+/// So, assuming that the hypothesis is true and a true total variance ŧ, the distance between
+/// sample and its underlying distribution must be greater than `ε`. Then we can bound this above to
+/// the KS statistic by constructing the random variable `ε ·sqrt(N)`, which therefore has expected
+/// value at most `1`.
 ///
 /// As E-value we just return the random value. This has expected value bounded by `1` as
 /// just demonstrated so it is a valid E-value for the hypothesis.
-///
-/// FIXME: there's a neat corollary here where we can give an E-Value for a particular sample
-/// being *of* an underlying distribution, corresponding to the hypothesis that the distance is at
-/// most `0.0`, very quickly. Just calculate the maximum distance of the empirical CDF to the
-/// analytical CDF and return `2*N*ε` as above.
 pub struct MaximumHellingerHypothesis {
     expected: f64,
 }
@@ -295,10 +276,7 @@ impl MaximumHellingerHypothesis {
         }
 
         let eps = min;
-
-        Evalue {
-            value: 2.0 * count * eps,
-        }
+        Self::from_ks_statistic_sqrt(count.sqrt() * eps)
     }
 
     pub fn e_value_by_constraint(
@@ -313,9 +291,9 @@ impl MaximumHellingerHypothesis {
 
         for _ in 0..64 {
             let expand = f64::midpoint(min, max);
-            let constraints = constraint::apply_for_expanded(expand, sorted, cdf);
+            let constraints = constraint::apply_for_expanded(expand, sorted, cdf, Some(bc_bound));
 
-            if constraints.estimate.bc_estimate > bc_bound {
+            if constraints.estimate.bc_estimate >= bc_bound {
                 max = expand;
             } else {
                 min = expand;
@@ -323,9 +301,39 @@ impl MaximumHellingerHypothesis {
         }
 
         let eps = min;
+        Self::from_ks_statistic_sqrt(count.sqrt() * eps)
+    }
 
+    fn from_ks_statistic_sqrt(s: f64) -> Evalue {
+        // From "basic calculation" of the expected value of sqrt(x) under the KS PDF:
+        // Thanks to Wolfram Alpha
+        // integral 0->inf[ sqrt(x) · -2(sum{j=1;}{ (-1)^j 4k²x exp(-2k²x²) } ]
+        // = 2^(0.75)·Gamma(5/4)·-sum{ (-1)^j(1/k²) }
+        // = 2^(0.75)·Gamma(5/4) · pi²/12
         Evalue {
-            value: 2.0 * count * eps,
+            value: s / 1.2537532730627503,
+        }
+    }
+
+    fn from_ks_statistic(s: f64) -> Evalue {
+        // From basic calculation of the expected value of x under the KS PDF:
+        // integral 0->inf[ x · -2(sum{j=1;}{ (-1)^j 4k²x exp(-2k²x²) } ]
+        // = -(sum{j=1;}{ (-1)^j 8k²x² exp(-2k²x²) }
+        // = -sqrt(pi/2) sum{ (-1)^j(1/k) }
+        // = sqrt(pi/2)·log 2
+        Evalue {
+            value: s / 0.8687311606361591,
+        }
+    }
+
+    fn from_ks_statistic_square(s: f64) -> Evalue {
+        // Again from basic calculation of E[x²):
+        // integral 0->inf[ x² · -2(sum{j=1;}{ (-1)^j 4k²x exp(-2k²x²) } ]
+        // = -(sum{j=1;}{ (-1)^j 8k²x³ exp(-2k²x²) }
+        // = -sum{ (-1)^j(1/k²) }
+        // = pi²/12
+        Evalue {
+            value: s.powi(2) / 0.8687311606361591,
         }
     }
 }
