@@ -315,10 +315,10 @@ pub(crate) fn apply_for_expanded(
     let mut total_interval = 0.0;
     let mut total_p = 0.0;
 
-    let mut taken_steps = FloatVal::from_exact(0.0);
+    let mut taken_steps = 0.0;
 
     while !pre.is_empty() {
-        let mut lambda = f64::INFINITY;
+        let mut constraining_step = f64::INFINITY;
         let mut best = (0, 0, [0.0, 0.0, 0.0]);
 
         assert_eq!(pre.active.len(), sqrtp.len());
@@ -336,29 +336,30 @@ pub(crate) fn apply_for_expanded(
 
             let ival = FloatVal::sum_above([uppers[k], -lowers_pre_j[j]]);
             let c = FloatVal::sum_above([ival, -prec]);
-            let minstep = -FloatVal::sum_above([-taken_steps.above, minstep]);
 
             assert!(
                 c >= 0.0,
                 "c must be an overestimation of a non-negative number"
             );
 
-            let step_max = solve(a, taken_steps, c).max(minstep);
+            let step_max = solve(a, c).max(minstep);
             assert!(step_max >= 0.0);
 
-            if step_max < lambda {
-                lambda = step_max;
+            if step_max < constraining_step {
+                constraining_step = step_max;
                 best = (j, k, [a, b, prec]);
             }
         }
 
-        if !lambda.is_finite() {
-            assert!(lambda > 0.0);
+        if !constraining_step.is_finite() {
+            assert!(constraining_step > 0.0);
             break;
         }
 
-        assert!(lambda >= 0.0);
-        taken_steps = taken_steps + lambda;
+        assert!(constraining_step >= 0.0);
+        assert!(constraining_step >= taken_steps);
+        taken_steps = constraining_step;
+
         // Remove (j..k) from the problem and update the prefix sums.
         let (j, k, _debug_setup) = best;
 
@@ -380,12 +381,11 @@ pub(crate) fn apply_for_expanded(
 
             // Only open variables.
             if pre.active[idx] {
-                let step = FloatVal::from_mul(lambda, p_i.sqrt.above);
-                *o = FloatVal::sum_above([*o, step.above]);
+                *o = FloatVal::from_mul(taken_steps, p_i.sqrt.above).above;
             }
         }
 
-        // Count contribution from open variables.
+        // Count contribution from variables we are going to close.
         for idx in j..=k {
             let p_i = &sqrtp[idx];
             let o = &mut offset[idx];
@@ -533,8 +533,8 @@ pub(crate) fn apply_for_expanded(
     }
 }
 
-/// Solve a(l + b)² >= c for the minimum l >= 0. Note that a, b, c are / should be all non-negative.
-fn solve(a: f64, b: FloatVal, c: f64) -> f64 {
+/// Solve al² >= c for the minimum l >= 0. Note that a, b, c are / should be all non-negative.
+fn solve(a: f64, c: f64) -> f64 {
     assert!(a.is_finite());
     assert!(c.is_finite());
 
@@ -554,10 +554,7 @@ fn solve(a: f64, b: FloatVal, c: f64) -> f64 {
         return f64::INFINITY;
     }
 
-    let dsq = FloatVal::from_sqrt(ca).above;
-    assert!(dsq >= b.below);
-
-    FloatVal::sum_above([dsq, -b.below])
+    FloatVal::from_sqrt(ca).above
 }
 
 #[derive(Default, Debug)]
@@ -598,13 +595,13 @@ impl PrefixLookup {
         !self.active.iter().copied().any(|x| x)
     }
 
-    fn remove(&mut self, j: usize, k: usize, lambda: FloatVal) {
+    fn remove(&mut self, j: usize, k: usize, lambda: f64) {
         // We must underestimate the used-up interval budget.
-        let c_step = FloatVal::from_mul(lambda.below, lambda.below);
+        let c_step = FloatVal::from_mul(lambda, lambda);
 
         for idx in j..=k {
             if self.active[idx] {
-                self.step[idx] = lambda.above;
+                self.step[idx] = lambda;
 
                 let c = &mut self.c[idx];
                 *c = (c_step * self.a[idx]).below;
