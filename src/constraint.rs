@@ -319,18 +319,18 @@ pub(crate) fn apply_for_expanded(
 
     while !pre.is_empty() {
         let mut constraining_step = f64::INFINITY;
-        let mut best = (0, 0, [0.0, 0.0, 0.0]);
+        let mut best = (0, 0, [0.0, 0.0]);
 
-        assert_eq!(pre.active.len(), sqrtp.len());
-        assert_eq!(pre.a.len(), sqrtp.len());
-        assert_eq!(pre.c.len(), sqrtp.len());
-        assert_eq!(offset.len(), sqrtp.len());
+        debug_assert_eq!(pre.active.len(), sqrtp.len());
+        debug_assert_eq!(pre.a.len(), sqrtp.len());
+        debug_assert_eq!(pre.c.len(), sqrtp.len());
+        debug_assert_eq!(offset.len(), sqrtp.len());
 
         for prefix in pre.prefix_sum_iterator() {
             let ConsideredVariables {
                 j,
                 k,
-                inequality: [a, b, prec],
+                inequality: [a, prec],
                 minstep,
             } = prefix;
 
@@ -347,7 +347,7 @@ pub(crate) fn apply_for_expanded(
 
             if step_max < constraining_step {
                 constraining_step = step_max;
-                best = (j, k, [a, b, prec]);
+                best = (j, k, [a, prec]);
             }
         }
 
@@ -356,7 +356,7 @@ pub(crate) fn apply_for_expanded(
             break;
         }
 
-        assert!(constraining_step >= 0.0);
+        debug_assert!(constraining_step >= 0.0);
         assert!(constraining_step >= taken_steps);
         taken_steps = constraining_step;
 
@@ -408,6 +408,11 @@ pub(crate) fn apply_for_expanded(
         );
         */
 
+        // FIXME: this is the only change to the loop steps. It only affects inequalities that
+        // fully contain the interval we have just remove. That is this should linearly drop while
+        // iterating which would make the whole loop cost O(n²) instead of O(n³). We could allocate?
+        // Then we commit to having step size >= sqrt(N) unless we give up linear memory use. That
+        // seems fine though for the performance improvements. Maybe even go lower..
         pre.remove(j, k, taken_steps);
 
         if cfg!(debug_assertions) {
@@ -535,15 +540,18 @@ pub(crate) fn apply_for_expanded(
 
 /// Solve al² >= c for the minimum l >= 0. Note that a, b, c are / should be all non-negative.
 fn solve(a: f64, c: f64) -> f64 {
-    assert!(a.is_finite());
-    assert!(c.is_finite());
+    debug_assert!(a.is_finite(), "a sums to 1, algebraically");
+    debug_assert!(c.is_finite(), "c must not sum substantially above 1");
 
+    // FIXME: from a performance side, we should try to filter out these before.. This implies that
+    // all coefficients in the interval are zero, i.e. the analytical CDF is constant here. This
+    // will never solve to anything other than `INFINITY` as `a` is a constant over the iteration.
     if a == 0.0 {
         return f64::INFINITY;
     }
 
-    assert!(a >= 0.0, "Negative a coefficient in quadratic equation {a}");
-    assert!(c >= 0.0, "Negative c coefficient in quadratic equation {c}");
+    debug_assert!(a >= 0.0, "Negative a coefficient in quadratic equation {a}");
+    debug_assert!(c >= 0.0, "Negative c coefficient in quadratic equation {c}");
 
     // Avoid cancellation issues. We need to estimate `ba` in both directions, once for the square
     // root term (we only care about the positive solution) and once for its contribution in the
@@ -586,7 +594,7 @@ struct PrefixLookup {
 struct ConsideredVariables {
     j: usize,
     k: usize,
-    inequality: [f64; 3],
+    inequality: [f64; 2],
     minstep: f64,
 }
 
@@ -626,28 +634,30 @@ impl PrefixLookup {
         // intervals more efficiently than a simple test.
         (0..n).flat_map(move |j| {
             (j..n)
-                .scan(([0.0; 4], false), move |(acc, any_active), k| {
+                .scan(([0.0; 3], false), move |(acc, any_active), k| {
                     let is_active = self.active[k];
 
-                    let a = if is_active { self.a[k] } else { 0.0 };
+                    let a = self.a[k];
                     let c = self.c[k];
 
-                    assert!(a >= 0.0);
-                    assert!(acc[0] + a >= 0.0);
+                    debug_assert!(a >= 0.0);
+                    debug_assert!(acc[0] + a >= 0.0);
+
                     *any_active |= is_active;
 
                     // Accumulate all coefficients. (Fun fact: ML generated auto-complete had
                     // originally messed this up and just never stored the accumulator back).
-                    *acc = [
-                        FloatVal::from_add(acc[0], a).below,
-                        0.0,
-                        FloatVal::from_add(acc[2], c).below,
-                        if is_active {
-                            acc[3].max(self.minstep[k])
-                        } else {
-                            acc[3]
-                        },
-                    ];
+                    // Active variables contribute all coefficients, inactive variables only
+                    // contribute their interval usage lower bound `c`.
+                    if is_active {
+                        *acc = [
+                            FloatVal::from_add(acc[0], a).below,
+                            FloatVal::from_add(acc[1], c).below,
+                            acc[2].max(self.minstep[k]),
+                        ]
+                    } else {
+                        acc[1] = FloatVal::from_add(acc[1], c).below;
+                    };
 
                     Some((j, k, (*acc, *any_active)))
                 })
@@ -656,8 +666,8 @@ impl PrefixLookup {
                         Some(ConsideredVariables {
                             j,
                             k,
-                            inequality: [acc[0], acc[1], acc[2]],
-                            minstep: acc[3],
+                            inequality: [acc[0], acc[1]],
+                            minstep: acc[2],
                         })
                     } else {
                         None
