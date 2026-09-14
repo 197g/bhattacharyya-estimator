@@ -25,6 +25,14 @@ statrs = ["dep:statrs"]
 rand = "0.10"
 statrs = { version = "*", default-features = false, features = ["rand"] }
 
+ndarray = "0.16"
+nalgebra = "0.34"
+nalgebra-sparse = "0.11"
+# WTF both nalgebra and ndarray. Stupid LLM. Please point me to a better PCA
+# implementation that still has a partial top-n-component method?
+single_algebra = "0.9"
+linfa-datasets = { version = "0.8", features = ["diabetes", "winequality"] }
+
 [profile.test-performant]
 inherits = "release"
 debug-assertions = true

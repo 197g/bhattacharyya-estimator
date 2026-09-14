@@ -2,7 +2,10 @@
 mod constraint;
 pub mod mixed;
 
-use statrs::distribution::ContinuousCDF;
+use statrs::{
+    distribution::{ContinuousCDF, Normal},
+    statistics::{Data, Distribution},
+};
 
 pub struct ConfidenceLevel {
     dkw_constant: f64,
@@ -121,6 +124,52 @@ impl ConfidenceLevel {
     fn dvoretzky_kiefer_wolfowitz_constant(ln_level: f64) -> f64 {
         assert!(ln_level < 0.0);
         ((2.0f64.ln() - ln_level) / 2.0).sqrt()
+    }
+
+    /// Calculate the distance from the data-fitted normal distribution.
+    ///
+    /// This method provides a probable lower-bound of the squared Hellinger distance between
+    /// empirical and estimated analytical distribution. Note that this lower bounds the total
+    /// variational distance as well.
+    ///
+    /// While you might also use this simply to prove non-normality it is rather primitive for this
+    /// purpose as that would compete with multiple other normality tests.
+    ///
+    /// See the `pca-evaluation` test for an example.
+    pub fn non_normality(&self, data: impl IntoIterator<Item = f64>) -> Estimate {
+        let Some((data, normal)) = Self::data_to_normal_distribution(data) else {
+            return Estimate::from_bhattarachya_coefficient(1.0);
+        };
+
+        self.apply(&data, &normal)
+    }
+
+    /// See [`Self::non_normality`] but with a constraint solver estimate.
+    pub fn non_normality_constraint(
+        &self,
+        data: impl IntoIterator<Item = f64>,
+    ) -> constraint::ConstraintEstimator {
+        let Some((data, normal)) = Self::data_to_normal_distribution(data) else {
+            return constraint::ConstraintEstimator {
+                estimate: Estimate::from_bhattarachya_coefficient(1.0),
+                distributed: 1.0,
+            };
+        };
+
+        self.apply_constraint_maximizer(&data, &normal)
+    }
+
+    fn data_to_normal_distribution(
+        data: impl IntoIterator<Item = f64>,
+    ) -> Option<(Vec<f64>, Normal)> {
+        let mut data: Vec<f64> = data.into_iter().collect();
+        data.sort_by(f64::total_cmp);
+
+        let normal = Data::new(data.as_mut_slice());
+        let stddev = normal.std_dev()?;
+        let mean = normal.mean()?;
+
+        Some((data, Normal::new(mean, stddev).unwrap()))
     }
 }
 
